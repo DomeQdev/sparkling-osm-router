@@ -5,6 +5,7 @@ use crate::parser::parse_osm_xml;
 use neon::prelude::*;
 
 use lazy_static::lazy_static;
+use rayon;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
@@ -21,9 +22,15 @@ mod utils;
 type SharedGraph = Arc<RwLock<Graph>>;
 
 lazy_static! {
+    static ref TOKIO_RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
     static ref GRAPH_STORAGE: Mutex<HashMap<i32, SharedGraph>> = Mutex::new(HashMap::new());
-    static ref TOKIO_RUNTIME: Mutex<Runtime> =
-        Mutex::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    static ref ROUTING_THREAD_POOL: rayon::ThreadPool = {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_cpus::get())
+            .thread_name(|i| format!("routing-worker-{}", i))
+            .build()
+            .expect("Failed to create routing thread pool")
+    };
 }
 
 static mut NEXT_GRAPH_ID: i32 = 1;
@@ -74,22 +81,16 @@ fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let lon = cx.argument::<JsNumber>(0)?.value(&mut cx);
     let lat = cx.argument::<JsNumber>(1)?.value(&mut cx);
     let graph_id = cx.argument::<JsNumber>(2)?.value(&mut cx) as i32;
-    let use_penalties = if cx.len() > 3 {
-        cx.argument::<JsBoolean>(3)?.value(&mut cx)
-    } else {
-        true
-    };
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(graph) => graph.clone(),
         None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
     };
 
-    let nearest_result =
-        graph_store
-            .read()
-            .unwrap()
-            .find_nearest_way_and_node(lon, lat, use_penalties);
+    let nearest_result = graph_store
+        .read()
+        .unwrap()
+        .find_nearest_way_and_node(lon, lat);
 
     match nearest_result {
         Ok(Some((_way_id, node_id))) => Ok(cx.number(node_id as f64)),
@@ -124,10 +125,8 @@ fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
-    std::thread::spawn(move || {
-        let runtime = TOKIO_RUNTIME.lock().unwrap();
-
-        let async_result = runtime.block_on(async {
+    ROUTING_THREAD_POOL.spawn(move || {
+        let async_result = TOKIO_RUNTIME.block_on(async {
             graph_store
                 .read()
                 .unwrap()
@@ -260,61 +259,6 @@ fn get_way_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
     Ok(cx.null().upcast())
 }
 
-fn get_way_for_nodes_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
-    let js_nodes = cx.argument::<JsArray>(0)?;
-    let graph_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
-    };
-
-    let graph = graph_store.read().unwrap();
-    let node_count = js_nodes.len(&mut cx);
-    let mut way_ids = Vec::new();
-
-    let mut nodes = Vec::with_capacity(node_count as usize);
-    for i in 0..node_count {
-        let node_id = js_nodes
-            .get::<JsNumber, _, u32>(&mut cx, i)?
-            .downcast::<JsNumber, _>(&mut cx)
-            .or_else(|_| cx.throw_error("Node ID must be a number"))?
-            .value(&mut cx) as i64;
-        nodes.push(node_id);
-    }
-
-    for i in 0..nodes.len().saturating_sub(1) {
-        let current_node = nodes[i];
-        let next_node = nodes[i + 1];
-
-        let mut found_way_id = None;
-
-        for (way_id, way) in &graph.ways {
-            let way_nodes = &way.node_refs;
-
-            if let Some(idx) = way_nodes.iter().position(|&id| id == current_node) {
-                if idx + 1 < way_nodes.len() && way_nodes[idx + 1] == next_node {
-                    found_way_id = Some(*way_id);
-                    break;
-                } else if idx > 0 && way_nodes[idx - 1] == next_node {
-                    found_way_id = Some(*way_id);
-                    break;
-                }
-            }
-        }
-
-        way_ids.push(found_way_id.unwrap_or(-1));
-    }
-
-    let result = JsArray::new(&mut cx, way_ids.len());
-    for (i, way_id) in way_ids.iter().enumerate() {
-        let js_id = cx.number(*way_id as f64);
-        result.set(&mut cx, i as u32, js_id)?;
-    }
-
-    Ok(result)
-}
-
 fn cleanup_graph_store_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     GRAPH_STORAGE.lock().unwrap().clear();
 
@@ -376,7 +320,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("route", route_rust)?;
     cx.export_function("getNode", get_node_rust)?;
     cx.export_function("getWay", get_way_rust)?;
-    cx.export_function("getWayForNodes", get_way_for_nodes_rust)?;
     cx.export_function("offsetRouteShape", offset_route_shape_rust)?;
     cx.export_function("cleanupGraphStore", cleanup_graph_store_rust)?;
     Ok(())

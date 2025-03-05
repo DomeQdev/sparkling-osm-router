@@ -71,8 +71,16 @@ impl Graph {
         let mut turn_restrictions = Vec::new();
 
         for way in self.ways.values() {
-            let way_id = way.id;
-            let is_oneway = way.tags.get("oneway").map_or(false, |v| v == "yes");
+            let is_oneway = if way
+                .tags
+                .get("junction")
+                .map_or(false, |v| v == "roundabout")
+            {
+                true
+            } else {
+                way.tags.get("oneway").map_or(false, |v| v == "yes")
+            };
+            let way_id = way.id; // dodano inicjalizację way_id
 
             let base_cost = {
                 let profile = self.profile.as_ref().expect("Profile must be set");
@@ -118,6 +126,10 @@ impl Graph {
                     });
                 }
             }
+        }
+
+        for node_id in self.nodes.keys() {
+            adjacency_list.entry(*node_id).or_default();
         }
 
         for relation in self.relations.values() {

@@ -60,15 +60,16 @@ class Graph {
 
     /**
      * Finds the nearest node to given coordinates.
-     * @param {Location} [lon, lat] - Longitude and latitude coordinates
-     * @param {boolean} usePenalties - Whether to apply penalties during search (default: true)
+     * @param {Location} location - Longitude and latitude coordinates
      * @returns {number} The ID of the nearest node
      * @throws {Error} If the graph is not loaded
      */
-    getNearestNode = ([lon, lat]: Location, usePenalties: boolean = true) => {
+    getNearestNode = (location: Location) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
-        return findNearestNode(lon, lat, this.graph, usePenalties);
+        const [lon, lat] = location;
+
+        return findNearestNode(lon, lat, this.graph);
     };
 
     /**
