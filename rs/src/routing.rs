@@ -201,11 +201,29 @@ impl Graph {
     ) -> Result<Option<RouteResult>> {
         let routing_graph = self.build_routing_graph();
 
+        let start_node = self.nodes.get(&start_node_id).ok_or_else(|| {
+            GraphError::InvalidOsmData(format!("Start node {} not found", start_node_id))
+        })?;
+        let end_node = self.nodes.get(&end_node_id).ok_or_else(|| {
+            GraphError::InvalidOsmData(format!("End node {} not found", end_node_id))
+        })?;
+
+        let direct_distance = haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
+        let timeout_duration = if direct_distance < 20.0 {
+            Duration::from_secs(30)
+        } else if direct_distance < 50.0 {
+            Duration::from_secs(60)
+        } else if direct_distance < 100.0 {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(300)
+        };
+
         let route_future = tokio::task::spawn_blocking(move || {
             find_route_astar(&routing_graph, start_node_id, end_node_id, initial_bearing)
         });
 
-        match timeout(Duration::from_secs(30), route_future).await {
+        match timeout(timeout_duration, route_future).await {
             Ok(result) => match result {
                 Ok(route_result) => route_result,
                 Err(_) => Err(GraphError::InvalidOsmData(
@@ -254,17 +272,33 @@ fn find_route_astar(
     let direct_distance =
         haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
 
-    let distance_multiplier = if direct_distance < 5.0 {
-        5.0
+    let distance_multiplier = if direct_distance < 0.5 {
+        20.0
+    } else if direct_distance < 1.0 {
+        15.0
+    } else if direct_distance < 5.0 {
+        10.0
     } else if direct_distance < 20.0 {
         8.0
     } else if direct_distance < 50.0 {
-        10.0
-    } else {
         15.0
+    } else if direct_distance < 100.0 {
+        25.0
+    } else if direct_distance < 200.0 {
+        35.0
+    } else {
+        50.0
     };
 
-    let max_search_distance = direct_distance * distance_multiplier;
+    let urban_factor = if direct_distance < 2.0 {
+        4.0
+    } else if direct_distance < 5.0 {
+        3.0
+    } else {
+        1.0
+    };
+
+    let max_search_distance = direct_distance * distance_multiplier * urban_factor;
     let mut best_distance_so_far = f64::MAX;
 
     let mut open_set = BinaryHeap::new();
@@ -287,7 +321,15 @@ fn find_route_astar(
     });
 
     let mut iterations = 0;
-    let max_iterations = 1_000_000;
+    let max_iterations = if direct_distance < 20.0 {
+        1_000_000
+    } else if direct_distance < 50.0 {
+        2_000_000
+    } else if direct_distance < 100.0 {
+        5_000_000
+    } else {
+        10_000_000
+    };
 
     while let Some(current) = open_set.pop() {
         iterations += 1;
@@ -307,8 +349,12 @@ fn find_route_astar(
             continue;
         }
 
-        let rejection_factor = if direct_distance < 5.0 {
-            2.5
+        let rejection_factor = if direct_distance < 0.5 {
+            10.0
+        } else if direct_distance < 1.0 {
+            8.0
+        } else if direct_distance < 5.0 {
+            5.0
         } else if direct_distance < 20.0 {
             3.5
         } else if direct_distance < 50.0 {
@@ -366,12 +412,12 @@ fn find_route_astar(
                         let current_direct_distance = direct_distances
                             .get(&current_node_id)
                             .unwrap_or(&direct_distance);
-                        if direct_distance > 50.0
-                            && *current_direct_distance < direct_distance * 0.2
-                        {
-                        } else if edge_direct_distance > max_search_distance
-                            && edge.to_node != end_node_id
-                        {
+                        if direct_distance < 2.0 {
+                            if edge_direct_distance > max_search_distance * 1.5 && edge.to_node != end_node_id {
+                                continue;
+                            }
+                        } else if direct_distance > 50.0 && *current_direct_distance < direct_distance * 0.1 {
+                        } else if edge_direct_distance > max_search_distance * 1.2 && edge.to_node != end_node_id {
                             continue;
                         }
 
@@ -478,12 +524,12 @@ fn find_route_astar(
                         let current_direct_distance = direct_distances
                             .get(&current_node_id)
                             .unwrap_or(&direct_distance);
-                        if direct_distance > 50.0
-                            && *current_direct_distance < direct_distance * 0.2
-                        {
-                        } else if edge_direct_distance > max_search_distance
-                            && edge.to_node != end_node_id
-                        {
+                        if direct_distance < 2.0 {
+                            if edge_direct_distance > max_search_distance * 1.5 && edge.to_node != end_node_id {
+                                continue;
+                            }
+                        } else if direct_distance > 50.0 && *current_direct_distance < direct_distance * 0.1 {
+                        } else if edge_direct_distance > max_search_distance * 1.2 && edge.to_node != end_node_id {
                             continue;
                         }
                     }
