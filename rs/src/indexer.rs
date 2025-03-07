@@ -1,8 +1,9 @@
 use crate::errors::Result;
 use crate::graph::Node;
 use crate::graph::{Graph, WayEnvelope};
-use crate::routing::TurnRestriction;
+use crate::routing::{RouteEdge, RouteGraph, TurnRestriction, TurnRestrictionData};
 use rstar::{RTree, AABB};
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -36,10 +37,154 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
 
     graph.index_rtree()?;
 
+    graph.route_graph = Some(build_routing_graph(&graph));
+
     update_graph_nodes(&graph);
     index_restricted_nodes(&graph);
 
     Ok(graph)
+}
+
+fn build_routing_graph(graph: &Graph) -> RouteGraph {
+    let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
+    let mut turn_restrictions = Vec::new();
+
+    crate::routing::thread_local_turn_restrictions_mut(|tr| {
+        turn_restrictions = tr.clone();
+    });
+
+    let vehicle_type = graph
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.vehicle_type.clone());
+
+    for way in graph.ways.values() {
+        let is_oneway = if way
+            .tags
+            .get("junction")
+            .map_or(false, |v| v == "roundabout")
+        {
+            true
+        } else {
+            way.tags.get("oneway").map_or(false, |v| v == "yes")
+        };
+        let way_id = way.id;
+
+        let base_cost = {
+            let profile = graph.profile.as_ref().expect("Profile must be set");
+            if let Some(tag_value) = way.tags.get(&profile.key) {
+                match profile.penalties.penalties.get(tag_value) {
+                    Some(cost) => *cost,
+                    None => match profile.penalties.default {
+                        Some(default_cost) => default_cost,
+                        None => continue,
+                    },
+                }
+            } else {
+                match profile.penalties.default {
+                    Some(default_cost) => default_cost,
+                    None => continue,
+                }
+            }
+        };
+
+        for i in 0..way.node_refs.len().saturating_sub(1) {
+            let from_node = way.node_refs[i];
+            let to_node = way.node_refs[i + 1];
+
+            let cost = if let (Some(node1), Some(node2)) =
+                (graph.nodes.get(&from_node), graph.nodes.get(&to_node))
+            {
+                let distance =
+                    crate::routing::haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon);
+
+                (distance * 1000.0 * (base_cost as f64)).round() as i64
+            } else {
+                base_cost * 1000
+            };
+
+            adjacency_list
+                .entry(from_node)
+                .or_default()
+                .push(RouteEdge {
+                    to_node,
+                    way_id,
+                    cost,
+                });
+
+            if !is_oneway {
+                adjacency_list.entry(to_node).or_default().push(RouteEdge {
+                    to_node: from_node,
+                    way_id,
+                    cost,
+                });
+            }
+        }
+    }
+
+    for node_id in graph.nodes.keys() {
+        adjacency_list.entry(*node_id).or_default();
+    }
+
+    for relation in graph.relations.values() {
+        if let Some(restriction_type) = relation.tags.get("type") {
+            if restriction_type == "restriction" {
+                if let Some(restriction_value) = relation.tags.get("restriction") {
+                    let restriction_type = if restriction_value.starts_with("no_") {
+                        TurnRestriction::Prohibitory
+                    } else if restriction_value.starts_with("only_") {
+                        TurnRestriction::Mandatory
+                    } else {
+                        TurnRestriction::Inapplicable
+                    };
+
+                    if restriction_type != TurnRestriction::Inapplicable {
+                        let mut from_way: Option<i64> = None;
+                        let mut via_node: Option<i64> = None;
+                        let mut to_way: Option<i64> = None;
+
+                        for member in &relation.members {
+                            match member.role.as_str() {
+                                "from" if member.member_type == "way" => {
+                                    from_way = Some(member.ref_id);
+                                }
+                                "via" if member.member_type == "node" => {
+                                    via_node = Some(member.ref_id);
+                                }
+                                "to" if member.member_type == "way" => {
+                                    to_way = Some(member.ref_id);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let (Some(from), Some(via), Some(to)) = (from_way, via_node, to_way) {
+                            let except = relation
+                                .tags
+                                .get("except")
+                                .map(|e| e.split(';').map(String::from).collect())
+                                .unwrap_or_else(HashSet::new);
+
+                            turn_restrictions.push(TurnRestrictionData {
+                                restriction_type,
+                                from_way: from,
+                                via_node: via,
+                                to_way: to,
+                                except,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    RouteGraph {
+        adjacency_list,
+        turn_restrictions,
+        nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
+        vehicle_type,
+    }
 }
 
 fn filter_graph(graph: &mut Graph) {

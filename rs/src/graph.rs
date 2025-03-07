@@ -57,6 +57,8 @@ pub struct Graph {
     pub way_rtree: RTree<WayEnvelope>,
     #[serde(skip)]
     pub profile: Option<Profile>,
+    #[serde(skip)]
+    pub route_graph: Option<crate::routing::RouteGraph>,
 }
 
 impl Finalize for Graph {}
@@ -89,6 +91,7 @@ impl Graph {
             relations: HashMap::new(),
             way_rtree: RTree::new(),
             profile: None,
+            route_graph: None,
         }
     }
 

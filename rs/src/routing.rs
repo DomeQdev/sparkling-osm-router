@@ -64,170 +64,35 @@ impl PartialOrd for NodeWithPrevious {
 }
 
 #[derive(Clone, Debug)]
-struct RouteEdge {
-    to_node: i64,
-    way_id: i64,
-    cost: i64,
+pub struct RouteEdge {
+    pub to_node: i64,
+    pub way_id: i64,
+    pub cost: i64,
 }
 
 #[derive(Clone, Debug)]
-struct RouteGraph {
-    adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
-    turn_restrictions: Vec<TurnRestrictionData>,
-    nodes_map: FxHashMap<i64, Node>,
-    vehicle_type: Option<String>,
+pub struct RouteGraph {
+    pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
+    pub turn_restrictions: Vec<TurnRestrictionData>,
+    pub nodes_map: FxHashMap<i64, Node>,
+    pub vehicle_type: Option<String>,
 }
 
 impl Graph {
-    fn build_routing_graph(&self) -> RouteGraph {
-        let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
-        let mut turn_restrictions = Vec::new();
-
-        TURN_RESTRICTIONS.with(|tr_cell| {
-            turn_restrictions = tr_cell.borrow().clone();
-        });
-
-        let vehicle_type = self
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.vehicle_type.clone());
-
-        for way in self.ways.values() {
-            let is_oneway = if way
-                .tags
-                .get("junction")
-                .map_or(false, |v| v == "roundabout")
-            {
-                true
-            } else {
-                way.tags.get("oneway").map_or(false, |v| v == "yes")
-            };
-            let way_id = way.id;
-
-            let base_cost = {
-                let profile = self.profile.as_ref().expect("Profile must be set");
-                if let Some(tag_value) = way.tags.get(&profile.key) {
-                    match profile.penalties.penalties.get(tag_value) {
-                        Some(cost) => *cost,
-                        None => match profile.penalties.default {
-                            Some(default_cost) => default_cost,
-                            None => continue,
-                        },
-                    }
-                } else {
-                    match profile.penalties.default {
-                        Some(default_cost) => default_cost,
-                        None => continue,
-                    }
-                }
-            };
-
-            for i in 0..way.node_refs.len().saturating_sub(1) {
-                let from_node = way.node_refs[i];
-                let to_node = way.node_refs[i + 1];
-
-                let cost = if let (Some(node1), Some(node2)) =
-                    (self.nodes.get(&from_node), self.nodes.get(&to_node))
-                {
-                    let distance = haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon);
-
-                    (distance * 1000.0 * (base_cost as f64)).round() as i64
-                } else {
-                    base_cost * 1000
-                };
-
-                adjacency_list
-                    .entry(from_node)
-                    .or_default()
-                    .push(RouteEdge {
-                        to_node,
-                        way_id,
-                        cost,
-                    });
-
-                if !is_oneway {
-                    adjacency_list.entry(to_node).or_default().push(RouteEdge {
-                        to_node: from_node,
-                        way_id,
-                        cost,
-                    });
-                }
-            }
-        }
-
-        for node_id in self.nodes.keys() {
-            adjacency_list.entry(*node_id).or_default();
-        }
-
-        for relation in self.relations.values() {
-            if let Some(restriction_type) = relation.tags.get("type") {
-                if restriction_type == "restriction" {
-                    if let Some(restriction_value) = relation.tags.get("restriction") {
-                        let restriction_type = if restriction_value.starts_with("no_") {
-                            TurnRestriction::Prohibitory
-                        } else if restriction_value.starts_with("only_") {
-                            TurnRestriction::Mandatory
-                        } else {
-                            TurnRestriction::Inapplicable
-                        };
-
-                        if restriction_type != TurnRestriction::Inapplicable {
-                            let mut from_way: Option<i64> = None;
-                            let mut via_node: Option<i64> = None;
-                            let mut to_way: Option<i64> = None;
-
-                            for member in &relation.members {
-                                match member.role.as_str() {
-                                    "from" if member.member_type == "way" => {
-                                        from_way = Some(member.ref_id);
-                                    }
-                                    "via" if member.member_type == "node" => {
-                                        via_node = Some(member.ref_id);
-                                    }
-                                    "to" if member.member_type == "way" => {
-                                        to_way = Some(member.ref_id);
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if let (Some(from), Some(via), Some(to)) = (from_way, via_node, to_way)
-                            {
-                                let except = relation
-                                    .tags
-                                    .get("except")
-                                    .map(|e| e.split(';').map(String::from).collect())
-                                    .unwrap_or_else(HashSet::new);
-
-                                turn_restrictions.push(TurnRestrictionData {
-                                    restriction_type,
-                                    from_way: from,
-                                    via_node: via,
-                                    to_way: to,
-                                    except,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        RouteGraph {
-            adjacency_list,
-            turn_restrictions,
-            nodes_map: FxHashMap::from_iter(self.nodes.clone()),
-            vehicle_type,
-        }
-    }
-
     pub async fn route(
         &self,
         start_node_id: i64,
         end_node_id: i64,
         initial_bearing: Option<f64>,
     ) -> Result<Option<RouteResult>> {
-        let routing_graph = self.build_routing_graph();
+        let routing_graph = match &self.route_graph {
+            Some(graph) => graph.clone(),
+            None => {
+                return Err(GraphError::InvalidOsmData(
+                    "Routing graph not built".to_string(),
+                ))
+            }
+        };
 
         let start_node = self.nodes.get(&start_node_id).ok_or_else(|| {
             GraphError::InvalidOsmData(format!("Start node {} not found", start_node_id))
@@ -730,7 +595,7 @@ fn reconstruct_path_with_ways(
     (path_nodes, deduped_ways)
 }
 
-fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let r = 6371.0;
     let lat1_rad = lat1.to_radians();
     let lon1_rad = lon1.to_radians();
