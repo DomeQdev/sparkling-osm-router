@@ -45,9 +45,96 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
 fn filter_graph(graph: &mut Graph) {
     let profile = graph.profile.clone().expect("Profile must be set");
 
-    graph
-        .ways
-        .retain(|_, way| way.tags.contains_key(&profile.key));
+    graph.ways.retain(|_, way| {
+        let has_profile_key = way.tags.contains_key(&profile.key);
+
+        if profile.vehicle_type.is_none() {
+            return has_profile_key;
+        }
+
+        let vehicle_type = profile.vehicle_type.as_ref().unwrap();
+
+        let access_value = way.tags.get("access");
+
+        if access_value.map_or(false, |v| v == "no") {
+            match vehicle_type.as_str() {
+                "foot" => way
+                    .tags
+                    .get("foot")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "bicycle" => way
+                    .tags
+                    .get("bicycle")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "motorcar" => way
+                    .tags
+                    .get("motorcar")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "motorcycle" => way
+                    .tags
+                    .get("motorcycle")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "psv" => {
+                    way.tags
+                        .get("psv")
+                        .map_or(false, |v| v == "yes" || v == "designated")
+                        || way
+                            .tags
+                            .get("bus")
+                            .map_or(false, |v| v == "yes" || v == "designated")
+                        || way
+                            .tags
+                            .get("minibus")
+                            .map_or(false, |v| v == "yes" || v == "designated")
+                        || way
+                            .tags
+                            .get("tourist_bus")
+                            .map_or(false, |v| v == "yes" || v == "designated")
+                        || way
+                            .tags
+                            .get("coach")
+                            .map_or(false, |v| v == "yes" || v == "designated")
+                }
+                "train" => way
+                    .tags
+                    .get("train")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "subway" => way
+                    .tags
+                    .get("subway")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                "tram" => way
+                    .tags
+                    .get("tram")
+                    .map_or(false, |v| v == "yes" || v == "designated"),
+                _ => false,
+            }
+        } else {
+            let vehicle_access = match vehicle_type.as_str() {
+                "foot" => way.tags.get("foot"),
+                "bicycle" => way.tags.get("bicycle"),
+                "motorcar" => way.tags.get("motorcar"),
+                "motorcycle" => way.tags.get("motorcycle"),
+                "psv" => way
+                    .tags
+                    .get("psv")
+                    .or(way.tags.get("bus"))
+                    .or(way.tags.get("minibus"))
+                    .or(way.tags.get("tourist_bus"))
+                    .or(way.tags.get("coach")),
+                "train" => way.tags.get("train"),
+                "subway" => way.tags.get("subway"),
+                "tram" => way.tags.get("tram"),
+                _ => None,
+            };
+
+            if vehicle_access.map_or(false, |v| v == "no" || v == "permissive" || v == "private") {
+                return false;
+            }
+
+            has_profile_key
+        }
+    });
 
     let used_node_ids: HashSet<i64> = graph
         .ways
@@ -100,11 +187,22 @@ fn process_turn_restrictions(graph: &mut Graph) {
 fn process_single_restriction(
     relation: &crate::graph::Relation,
     node_to_ways: &mut HashMap<i64, HashSet<i64>>,
-    _restriction_type: TurnRestriction,
+    restriction_type: TurnRestriction,
 ) -> bool {
     let mut from_way_id: Option<i64> = None;
     let mut via_node_id: Option<i64> = None;
     let mut to_way_id: Option<i64> = None;
+    let mut except = HashSet::new();
+
+    if let Some(except_tag) = relation.tags.get("except") {
+        except_tag
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .for_each(|s| {
+                except.insert(s.to_string());
+            });
+    }
 
     for member in &relation.members {
         match member.role.as_str() {
@@ -124,6 +222,18 @@ fn process_single_restriction(
     if let (Some(from_id), Some(via_id), Some(to_id)) = (from_way_id, via_node_id, to_way_id) {
         if let Some(ways_at_node) = node_to_ways.get(&via_id) {
             if ways_at_node.contains(&from_id) && ways_at_node.contains(&to_id) {
+                if !RESTRICTED_NODES.with(|nodes| nodes.borrow_mut().insert(via_id)) {}
+
+                crate::routing::thread_local_turn_restrictions_mut(|tr| {
+                    tr.push(crate::routing::TurnRestrictionData {
+                        restriction_type,
+                        from_way: from_id,
+                        via_node: via_id,
+                        to_way: to_id,
+                        except,
+                    });
+                });
+
                 return true;
             }
         }

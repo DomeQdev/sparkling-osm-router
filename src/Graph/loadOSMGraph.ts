@@ -1,5 +1,5 @@
 import { existsSync, statSync, writeFileSync } from "fs";
-import { OSMGraphOptions, Location } from "../typings";
+import { Location, OSMGraphOptions } from ".";
 
 export default async ({ path, ttl, bounds, overpassQuery }: OSMGraphOptions) => {
     if (existsSync(path) && statSync(path).mtime.getTime() > Date.now() - ttl * 60 * 60 * 1000) return;

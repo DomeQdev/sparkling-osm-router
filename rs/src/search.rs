@@ -7,25 +7,19 @@ impl Graph {
     pub fn find_nearest_way_and_node(&self, lon: f64, lat: f64) -> Result<Option<(i64, i64)>> {
         let query_point: [f64; 2] = [lon, lat];
 
-        // Zbieramy wszystkie potencjalne drogi (zwiększam liczbę do 100 dla bezpieczeństwa)
         let mut candidate_ways = Vec::new();
         for way_envelope in self.way_rtree.nearest_neighbor_iter(&query_point).take(100) {
             candidate_ways.push(way_envelope.way_id);
         }
 
-        // Przygotuj struktury do przechowywania najlepszego wyniku
         let mut best_way_id = None;
         let mut best_node_id = None;
         let mut min_distance = f64::MAX;
 
-        // Sprawdź każdą drogę
         for way_id in candidate_ways {
-            // Oblicz odległość do najbliższego punktu na tej drodze
             if let Some((node_id, distance)) =
                 find_nearest_point_on_way(&self.ways, &self.nodes, way_id, query_point)
             {
-                // Jeśli to najlepsza dotychczasowa odległość i węzeł nie ma ograniczeń,
-                // zapisz go jako najlepszy wynik
                 if distance < min_distance && !has_mandatory_restriction_conflicts_indexed(node_id)
                 {
                     min_distance = distance;
@@ -34,8 +28,6 @@ impl Graph {
                     continue;
                 }
 
-                // Jeśli znaleźliśmy bliższy segment, ale węzeł ma ograniczenia,
-                // szukaj alternatywnego węzła na tej samej drodze
                 if distance < min_distance {
                     if let Some(alternative_node_id) =
                         find_alternative_node_on_way_indexed(&self.ways, way_id, node_id)
@@ -48,7 +40,6 @@ impl Graph {
             }
         }
 
-        // Zwróć wynik, jeśli znaleziono drogę i węzeł
         if let (Some(way_id), Some(node_id)) = (best_way_id, best_node_id) {
             return Ok(Some((way_id, node_id)));
         }
@@ -57,42 +48,31 @@ impl Graph {
     }
 }
 
-/// Oblicza kwadrat odległości między dwoma punktami
 fn squared_distance(p1: &[f64; 2], p2: &[f64; 2]) -> f64 {
     (p1[0] - p2[0]).powi(2) + (p1[1] - p2[1]).powi(2)
 }
 
-/// Oblicza kwadrat odległości od punktu do segmentu drogi
 fn point_to_segment_distance(p: &[f64; 2], a: &[f64; 2], b: &[f64; 2]) -> f64 {
-    // Wektor AB
     let ab_x = b[0] - a[0];
     let ab_y = b[1] - a[1];
 
-    // Jeśli segment jest punktem
     if ab_x.abs() < 1e-10 && ab_y.abs() < 1e-10 {
         return squared_distance(p, a);
     }
 
-    // Wektor AP
     let ap_x = p[0] - a[0];
     let ap_y = p[1] - a[1];
 
-    // Rzut AP na AB (parametr t wzdłuż linii)
     let t = (ap_x * ab_x + ap_y * ab_y) / (ab_x * ab_x + ab_y * ab_y);
 
-    // Ograniczamy t do przedziału [0,1] aby znaleźć punkt na segmencie
     let t_clamped = t.max(0.0).min(1.0);
 
-    // Punkt na odcinku AB najbliższy do P
     let closest_x = a[0] + t_clamped * ab_x;
     let closest_y = a[1] + t_clamped * ab_y;
 
-    // Kwadrat odległości
     (p[0] - closest_x).powi(2) + (p[1] - closest_y).powi(2)
 }
 
-/// Znajduje najbliższy punkt na drodze do danego punktu zapytania
-/// Zwraca identyfikator najbliższego węzła i odległość do najbliższego punktu na drodze
 fn find_nearest_point_on_way(
     ways: &HashMap<i64, Way>,
     nodes: &HashMap<i64, Node>,
@@ -118,7 +98,6 @@ fn find_nearest_point_on_way(
     let mut min_distance = f64::MAX;
     let mut nearest_node_id = None;
 
-    // Sprawdź odległość do każdego segmentu drogi
     for i in 0..len - 1 {
         let node1_id = way_nodes_refs[i];
         let node2_id = way_nodes_refs[i + 1];
@@ -133,14 +112,12 @@ fn find_nearest_point_on_way(
         let point1: [f64; 2] = [node1.lon, node1.lat];
         let point2: [f64; 2] = [node2.lon, node2.lat];
 
-        // Oblicz odległość do segmentu
         let segment_distance_sq = point_to_segment_distance(&query_point, &point1, &point2);
         let segment_distance = segment_distance_sq.sqrt();
 
         if segment_distance < min_distance {
             min_distance = segment_distance;
 
-            // Wybierz bliższy węzeł na znalezionym segmencie
             let dist_to_node1 = squared_distance(&query_point, &point1).sqrt();
             let dist_to_node2 = squared_distance(&query_point, &point2).sqrt();
 

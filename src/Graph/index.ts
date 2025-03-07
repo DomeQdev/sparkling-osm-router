@@ -13,8 +13,89 @@ import {
     offsetShape,
     route,
 } from "../RustModules";
-import { GraphOptions, Location, RouteResult } from "../typings";
 import loadOSMGraph from "./loadOSMGraph";
+
+export type Location = [number, number];
+
+/**
+ * Configuration for a routing profile.
+ */
+export type Profile = {
+    /**
+     * The OSM tag key to consider for routing (e.g., "highway").
+     * See https://wiki.openstreetmap.org/wiki/Tags#Keys_and_values
+     */
+    key: string;
+
+    /**
+     * Map of penalties for different OSM tag values (e.g., {"motorway": 1, "residential": 3}),
+     * including an optional default value for tags not explicitly specified.
+     * If default is not provided, routing will occur ONLY on ways with explicitly specified tags.
+     */
+    penalties: Partial<Record<string | "default", number>>;
+
+    /**
+     * The type of vehicle used for routing, which affects access restrictions and turn restrictions.
+     * Possible values: "foot", "bicycle", "motorcar", "motorcycle", "psv", "train", "subway", "tram"
+     * If not provided, no vehicle-specific filtering will be applied.
+     */
+    vehicle_type?: "foot" | "bicycle" | "motorcar" | "motorcycle" | "psv" | "train" | "subway" | "tram";
+};
+
+/**
+ * Configuration options for the routing graph.
+ */
+export type GraphOptions = {
+    /**
+     * Options related to fetching data from OpenStreetMap.
+     */
+    osmGraph: OSMGraphOptions;
+
+    /**
+     * Profile used for route calculations.
+     */
+    profile: Profile;
+};
+
+/**
+ * Configuration options for fetching OpenStreetMap data.
+ */
+export type OSMGraphOptions = {
+    /**
+     * Path to the OSM data file.
+     */
+    path: string;
+
+    /**
+     * Time to live for cached data in hours.
+     */
+    ttl: number;
+
+    /**
+     * Geographic boundaries of the query area.
+     */
+    bounds: Location[];
+
+    /**
+     * Query for the Overpass API.
+     */
+    overpassQuery: string;
+};
+
+/**
+ * Result of a routing process.
+ */
+export type RouteResult = {
+    /**
+     * List of node IDs that form the route.
+     */
+    nodes: number[];
+
+    /**
+     * List of way IDs that form the route.
+     */
+    ways: number[];
+};
 
 /**
  * Graph class that provides routing functionality using OSM data.
@@ -26,7 +107,7 @@ class Graph {
 
     /**
      * Creates a new Graph instance.
-     * @param {GraphOptions} options - Configuration options for the graph
+     * @param options - Configuration options for the graph
      */
     constructor(options: GraphOptions) {
         this.options = options;
@@ -34,7 +115,7 @@ class Graph {
 
     /**
      * Loads the OSM graph data into memory.
-     * @returns {Promise<void>} A promise that resolves when the graph has been loaded
+     * @returns A promise that resolves when the graph has been loaded
      */
     loadGraph = async () => {
         await loadOSMGraph(this.options.osmGraph);
@@ -46,11 +127,11 @@ class Graph {
 
     /**
      * Calculates a route between two nodes.
-     * @param {number} startNode - The ID of the starting node
-     * @param {number} endNode - The ID of the ending node
-     * @param {number} [bearing] - Optional bearing direction in degrees
-     * @returns {Promise<RouteResult>} The calculated route result
-     * @throws {Error} If the graph is not loaded
+     * @param startNode - The ID of the starting node
+     * @param endNode - The ID of the ending node
+     * @param bearing - Optional bearing direction in degrees
+     * @returns The calculated route result
+     * @throws If the graph is not loaded
      */
     getRoute = async (startNode: number, endNode: number, bearing?: number): Promise<RouteResult> => {
         if (this.graph === null) throw new Error("Graph is not loaded");
@@ -60,9 +141,9 @@ class Graph {
 
     /**
      * Finds the nearest node to given coordinates.
-     * @param {Location} location - Longitude and latitude coordinates
-     * @returns {number} The ID of the nearest node
-     * @throws {Error} If the graph is not loaded
+     * @param location - Longitude and latitude coordinates
+     * @returns The ID of the nearest node
+     * @throws If the graph is not loaded
      */
     getNearestNode = (location: Location) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
@@ -74,9 +155,9 @@ class Graph {
 
     /**
      * Gets node data for a list of node IDs.
-     * @param {{ nodes: number[] }} param0 - Object containing array of node IDs
-     * @returns {Array} Array of node data objects
-     * @throws {Error} If the graph is not loaded
+     * @param nodes Object containing array of node IDs
+     * @returns Array of node data objects
+     * @throws If the graph is not loaded
      */
     getNodes = ({ nodes }: { nodes: number[] }) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
@@ -86,9 +167,9 @@ class Graph {
 
     /**
      * Gets way data for a list of way IDs.
-     * @param {{ ways: number[] }} param0 - Object containing array of way IDs
-     * @returns {Array} Array of way data objects
-     * @throws {Error} If the graph is not loaded
+     * @param ways - Object containing array of way IDs
+     * @returns Array of way data objects
+     * @throws If the graph is not loaded
      */
     getWays = ({ ways }: { ways: number[] }) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
@@ -98,8 +179,8 @@ class Graph {
 
     /**
      * Returns the geographic shape formed by a list of nodes.
-     * @param {{ nodes: number[] }} param0 - Object containing array of node IDs
-     * @returns {Location[]} Array of [longitude, latitude] coordinates
+     * @param nodes - Object containing array of node IDs
+     * @returns Array of [longitude, latitude] coordinates
      */
     getShape = ({ nodes }: { nodes: number[] }) => {
         const nodeData = this.getNodes({ nodes });
@@ -109,11 +190,11 @@ class Graph {
 
     /**
      * Gets an offset shape for a list of nodes, useful for drawing paths with offsets.
-     * @param {{ nodes: number[] }} param0 - Object containing array of node IDs
-     * @param {number} offsetMeters - Offset distance in meters (default: 1.5)
-     * @param {1 | -1} offsetSide - Side of the offset, 1 for right, -1 for left (default: 1)
-     * @returns {Location[]} Array of offset [longitude, latitude] coordinates
-     * @throws {Error} If the graph is not loaded or node list is empty
+     * @param nodes - Object containing array of node IDs
+     * @param offsetMeters - Offset distance in meters (default: 1.5)
+     * @param offsetSide - Side of the offset, 1 for right, -1 for left (default: 1)
+     * @returns Array of offset [longitude, latitude] coordinates
+     * @throws If the graph is not loaded or node list is empty
      */
     getOffsetShape = (
         { nodes }: { nodes: number[] },
@@ -128,9 +209,9 @@ class Graph {
 
     /**
      * Cleans up the graph resources and resets the graph state.
-     * @returns {boolean} Result of the cleanup operation
+     * @returns Result of the cleanup operation
      */
-    cleanup = () => {
+    cleanup = (): boolean => {
         this.graph = null;
         return cleanupGraphStore();
     };

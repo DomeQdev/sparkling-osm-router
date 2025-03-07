@@ -36,6 +36,7 @@ const carGraph = new Graph({
             secondary: 50,
             residential: 150,
         },
+        vehicle_type: "motorcar", // vehicle type for access and turn restrictions
     },
 });
 
@@ -73,9 +74,12 @@ Main graph configuration contains the following parameters:
     profile: {
         key: string;        // OSM key, e.g., "highway" or "railway"
         penalties: {        // Weights (penalties) for different values
-            default: number,  // Default value (optional)
+            default?: number,  // Default value (optional)
             [value: string]: number // Weights for specific values
-        }
+        },
+        vehicle_type?: string // Vehicle type for access and turn restrictions (optional)
+                             // Supported values: "foot", "bicycle", "motorcar", "motorcycle",
+                             // "psv", "train", "subway", "tram"
     }
 }
 ```
@@ -104,7 +108,8 @@ The library allows defining different routing profiles by configuring the OSM ke
         residential: 50,
         service: 100,
         default: 300,
-    }
+    },
+    vehicle_type: "motorcar" // Optional vehicle type for access and turn restrictions
 }
 ```
 
@@ -117,7 +122,8 @@ The library allows defining different routing profiles by configuring the OSM ke
         // default is not provided, so the graph won't route over types not listed in penalties, for example, it will ignore subway
         rail: 10,
         light_rail: 20,
-    }
+    },
+    vehicle_type: "train" // Optional vehicle type for access and turn restrictions
 }
 ```
 
@@ -187,6 +193,7 @@ const carGraph = new Graph({
             tertiary: 70,
             residential: 150,
         },
+        vehicle_type: "motorcar",
     },
 });
 
@@ -216,6 +223,7 @@ const railGraph = new Graph({
             rail: 10,
             subway: 20,
         },
+        vehicle_type: "train",
     },
 });
 
@@ -257,14 +265,7 @@ const bikeGraph = new Graph({
             path: 20,
             footway: 30,
         },
+        vehicle_type: "bicycle",
     },
 });
 ```
-
-## Limitations
-
-### Access Restrictions
-
-**Warning**: We are currently working on implementing support for OSM access tags (such as `access`, `vehicle`, `motor_vehicle`, `bicycle`, etc.). At present, the router does not take these restrictions into account when calculating routes. This may result in routes that include roads where certain types of transport are not allowed.
-
-Future updates will address this limitation to provide more accurate routing that respects access restrictions.

@@ -1,9 +1,21 @@
 use crate::errors::{GraphError, Result};
 use crate::graph::{Graph, Node};
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use tokio::time::{timeout, Duration};
+
+thread_local! {
+    static TURN_RESTRICTIONS: RefCell<Vec<TurnRestrictionData>> = RefCell::new(Vec::new());
+}
+
+pub fn thread_local_turn_restrictions_mut<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<TurnRestrictionData>) -> R,
+{
+    TURN_RESTRICTIONS.with(|tr| f(&mut tr.borrow_mut()))
+}
 
 #[derive(Clone, Debug)]
 pub struct RouteResult {
@@ -63,12 +75,22 @@ struct RouteGraph {
     adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
     turn_restrictions: Vec<TurnRestrictionData>,
     nodes_map: FxHashMap<i64, Node>,
+    vehicle_type: Option<String>,
 }
 
 impl Graph {
     fn build_routing_graph(&self) -> RouteGraph {
         let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
         let mut turn_restrictions = Vec::new();
+
+        TURN_RESTRICTIONS.with(|tr_cell| {
+            turn_restrictions = tr_cell.borrow().clone();
+        });
+
+        let vehicle_type = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.vehicle_type.clone());
 
         for way in self.ways.values() {
             let is_oneway = if way
@@ -80,18 +102,23 @@ impl Graph {
             } else {
                 way.tags.get("oneway").map_or(false, |v| v == "yes")
             };
-            let way_id = way.id; // dodano inicjalizację way_id
+            let way_id = way.id;
 
             let base_cost = {
                 let profile = self.profile.as_ref().expect("Profile must be set");
                 if let Some(tag_value) = way.tags.get(&profile.key) {
-                    *profile
-                        .penalties
-                        .penalties
-                        .get(tag_value)
-                        .unwrap_or(&profile.penalties.default)
+                    match profile.penalties.penalties.get(tag_value) {
+                        Some(cost) => *cost,
+                        None => match profile.penalties.default {
+                            Some(default_cost) => default_cost,
+                            None => continue,
+                        },
+                    }
                 } else {
-                    profile.penalties.default
+                    match profile.penalties.default {
+                        Some(default_cost) => default_cost,
+                        None => continue,
+                    }
                 }
             };
 
@@ -190,6 +217,7 @@ impl Graph {
             adjacency_list,
             turn_restrictions,
             nodes_map: FxHashMap::from_iter(self.nodes.clone()),
+            vehicle_type,
         }
     }
 
@@ -208,15 +236,20 @@ impl Graph {
             GraphError::InvalidOsmData(format!("End node {} not found", end_node_id))
         })?;
 
-        let direct_distance = haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
+        let direct_distance =
+            haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
         let timeout_duration = if direct_distance < 20.0 {
-            Duration::from_secs(30)
-        } else if direct_distance < 50.0 {
             Duration::from_secs(60)
-        } else if direct_distance < 100.0 {
+        } else if direct_distance < 50.0 {
             Duration::from_secs(120)
-        } else {
+        } else if direct_distance < 100.0 {
             Duration::from_secs(300)
+        } else if direct_distance < 200.0 {
+            Duration::from_secs(600)
+        } else if direct_distance < 500.0 {
+            Duration::from_secs(1200)
+        } else {
+            Duration::from_secs(1800)
         };
 
         let route_future = tokio::task::spawn_blocking(move || {
@@ -272,25 +305,33 @@ fn find_route_astar(
     let direct_distance =
         haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
 
-    let distance_multiplier = if direct_distance < 0.5 {
-        20.0
+    let distance_multiplier = if direct_distance < 0.1 {
+        50.0
+    } else if direct_distance < 0.5 {
+        40.0
     } else if direct_distance < 1.0 {
-        15.0
+        30.0
     } else if direct_distance < 5.0 {
-        10.0
+        20.0
     } else if direct_distance < 20.0 {
-        8.0
-    } else if direct_distance < 50.0 {
         15.0
+    } else if direct_distance < 50.0 {
+        20.0
     } else if direct_distance < 100.0 {
         25.0
     } else if direct_distance < 200.0 {
-        35.0
+        40.0
+    } else if direct_distance < 500.0 {
+        60.0
     } else {
-        50.0
+        80.0
     };
 
-    let urban_factor = if direct_distance < 2.0 {
+    let urban_factor = if direct_distance < 0.1 {
+        6.0
+    } else if direct_distance < 0.5 {
+        5.0
+    } else if direct_distance < 2.0 {
         4.0
     } else if direct_distance < 5.0 {
         3.0
@@ -327,8 +368,12 @@ fn find_route_astar(
         2_000_000
     } else if direct_distance < 100.0 {
         5_000_000
+    } else if direct_distance < 200.0 {
+        15_000_000
+    } else if direct_distance < 500.0 {
+        30_000_000
     } else {
-        10_000_000
+        50_000_000
     };
 
     while let Some(current) = open_set.pop() {
@@ -349,22 +394,38 @@ fn find_route_astar(
             continue;
         }
 
-        let rejection_factor = if direct_distance < 0.5 {
-            10.0
+        let rejection_factor = if direct_distance < 0.1 {
+            50.0
+        } else if direct_distance < 0.5 {
+            30.0
         } else if direct_distance < 1.0 {
-            8.0
+            20.0
         } else if direct_distance < 5.0 {
-            5.0
+            15.0
         } else if direct_distance < 20.0 {
-            3.5
-        } else if direct_distance < 50.0 {
-            5.0
-        } else {
             10.0
+        } else if direct_distance < 50.0 {
+            8.0
+        } else if direct_distance < 100.0 {
+            8.0
+        } else if direct_distance < 200.0 {
+            12.0
+        } else {
+            15.0
         };
 
         if let Some(&current_direct_distance) = direct_distances.get(&current_node_id) {
-            if current_direct_distance > best_distance_so_far * rejection_factor {
+            let min_threshold = if direct_distance < 0.1 {
+                3.0
+            } else if direct_distance < 0.5 {
+                2.0
+            } else if direct_distance < 1.0 {
+                1.0
+            } else {
+                0.0
+            };
+
+            if current_direct_distance > (best_distance_so_far + min_threshold) * rejection_factor {
                 continue;
             }
         }
@@ -412,12 +473,35 @@ fn find_route_astar(
                         let current_direct_distance = direct_distances
                             .get(&current_node_id)
                             .unwrap_or(&direct_distance);
-                        if direct_distance < 2.0 {
-                            if edge_direct_distance > max_search_distance * 1.5 && edge.to_node != end_node_id {
+                        if direct_distance < 0.1 {
+                            if edge_direct_distance > max_search_distance * 3.0
+                                && edge.to_node != end_node_id
+                            {
                                 continue;
                             }
-                        } else if direct_distance > 50.0 && *current_direct_distance < direct_distance * 0.1 {
-                        } else if edge_direct_distance > max_search_distance * 1.2 && edge.to_node != end_node_id {
+                        } else if direct_distance < 0.5 {
+                            if edge_direct_distance > max_search_distance * 2.5
+                                && edge.to_node != end_node_id
+                            {
+                                continue;
+                            }
+                        } else if direct_distance < 2.0 {
+                            if edge_direct_distance > max_search_distance * 1.8
+                                && edge.to_node != end_node_id
+                            {
+                                continue;
+                            }
+                        } else if direct_distance > 50.0
+                            && *current_direct_distance < direct_distance * 0.1
+                        {
+                        } else if direct_distance > 200.0
+                            && edge_direct_distance > max_search_distance * 0.9
+                            && edge.to_node != end_node_id
+                        {
+                            continue;
+                        } else if edge_direct_distance > max_search_distance * 1.2
+                            && edge.to_node != end_node_id
+                        {
                             continue;
                         }
 
@@ -524,12 +608,35 @@ fn find_route_astar(
                         let current_direct_distance = direct_distances
                             .get(&current_node_id)
                             .unwrap_or(&direct_distance);
-                        if direct_distance < 2.0 {
-                            if edge_direct_distance > max_search_distance * 1.5 && edge.to_node != end_node_id {
+                        if direct_distance < 0.1 {
+                            if edge_direct_distance > max_search_distance * 3.0
+                                && edge.to_node != end_node_id
+                            {
                                 continue;
                             }
-                        } else if direct_distance > 50.0 && *current_direct_distance < direct_distance * 0.1 {
-                        } else if edge_direct_distance > max_search_distance * 1.2 && edge.to_node != end_node_id {
+                        } else if direct_distance < 0.5 {
+                            if edge_direct_distance > max_search_distance * 2.5
+                                && edge.to_node != end_node_id
+                            {
+                                continue;
+                            }
+                        } else if direct_distance < 2.0 {
+                            if edge_direct_distance > max_search_distance * 1.8
+                                && edge.to_node != end_node_id
+                            {
+                                continue;
+                            }
+                        } else if direct_distance > 50.0
+                            && *current_direct_distance < direct_distance * 0.1
+                        {
+                        } else if direct_distance > 200.0
+                            && edge_direct_distance > max_search_distance * 0.9
+                            && edge.to_node != end_node_id
+                        {
+                            continue;
+                        } else if edge_direct_distance > max_search_distance * 1.2
+                            && edge.to_node != end_node_id
+                        {
                             continue;
                         }
                     }
@@ -577,7 +684,18 @@ fn heuristic_cost(graph: &RouteGraph, node_id: i64, end_node: &Node) -> i64 {
 
         let distance = ((x * x + y * y).sqrt()) * 6371000.0;
 
-        return (distance * 30.0) as i64;
+        let distance_km = distance / 1000.0;
+        let heuristic_factor = if distance_km < 0.1 {
+            15.0
+        } else if distance_km < 0.5 {
+            20.0
+        } else if distance_km < 2.0 {
+            25.0
+        } else {
+            30.0
+        };
+
+        return (distance * heuristic_factor) as i64;
     }
     0
 }
@@ -675,15 +793,45 @@ fn is_turn_allowed(
 
     let prev_way_id = previous_way_id.unwrap();
 
+    let vehicle_type = graph.vehicle_type.as_deref();
+
     for restriction in &graph.turn_restrictions {
         if restriction.via_node == current_node_id
             && restriction.from_way == prev_way_id
             && restriction.to_way == next_way_id
         {
-            if !restriction.except.is_empty() {
-                if restriction.except.contains("car")
-                    || restriction.except.contains("motor_vehicle")
-                {
+            if !restriction.except.is_empty() && vehicle_type.is_some() {
+                let vtype = vehicle_type.unwrap();
+
+                let is_excepted = match vtype {
+                    "foot" => {
+                        restriction.except.contains("foot")
+                            || restriction.except.contains("pedestrian")
+                    }
+                    "bicycle" => restriction.except.contains("bicycle"),
+                    "motorcar" => {
+                        restriction.except.contains("motorcar")
+                            || restriction.except.contains("car")
+                            || restriction.except.contains("motor_vehicle")
+                    }
+                    "motorcycle" => {
+                        restriction.except.contains("motorcycle")
+                            || restriction.except.contains("motor_vehicle")
+                    }
+                    "psv" => {
+                        restriction.except.contains("psv")
+                            || restriction.except.contains("bus")
+                            || restriction.except.contains("minibus")
+                            || restriction.except.contains("tourist_bus")
+                            || restriction.except.contains("coach")
+                    }
+                    "train" => restriction.except.contains("train"),
+                    "subway" => restriction.except.contains("subway"),
+                    "tram" => restriction.except.contains("tram"),
+                    _ => false,
+                };
+
+                if is_excepted {
                     return true;
                 }
             }
@@ -698,9 +846,39 @@ fn is_turn_allowed(
         .turn_restrictions
         .iter()
         .filter(|r| {
+            let applies_to_vehicle = if vehicle_type.is_some() && !r.except.is_empty() {
+                let vtype = vehicle_type.unwrap();
+                match vtype {
+                    "foot" => !r.except.contains("foot") && !r.except.contains("pedestrian"),
+                    "bicycle" => !r.except.contains("bicycle"),
+                    "motorcar" => {
+                        !r.except.contains("motorcar")
+                            && !r.except.contains("car")
+                            && !r.except.contains("motor_vehicle")
+                    }
+                    "motorcycle" => {
+                        !r.except.contains("motorcycle") && !r.except.contains("motor_vehicle")
+                    }
+                    "psv" => {
+                        !r.except.contains("psv")
+                            && !r.except.contains("bus")
+                            && !r.except.contains("minibus")
+                            && !r.except.contains("tourist_bus")
+                            && !r.except.contains("coach")
+                    }
+                    "train" => !r.except.contains("train"),
+                    "subway" => !r.except.contains("subway"),
+                    "tram" => !r.except.contains("tram"),
+                    _ => true,
+                }
+            } else {
+                true
+            };
+
             r.via_node == current_node_id
                 && r.from_way == prev_way_id
                 && r.restriction_type == TurnRestriction::Mandatory
+                && applies_to_vehicle
         })
         .collect();
 

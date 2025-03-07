@@ -1,5 +1,6 @@
+import { Location, RouteResult } from "./Graph";
+
 const binding = require("../index.node");
-import { Location } from "./typings";
 
 export interface IOsmNodeData {
     id: number;
@@ -27,7 +28,7 @@ export const route: (
     endNode: number,
     initialBearing: number | null,
     graphId: number
-) => Promise<{ nodes: number[]; ways: number[] }> = binding.route;
+) => Promise<RouteResult> = binding.route;
 
 export const getNode: (node: number, graphId: number) => IOsmNodeData | null = binding.getNode;
 
