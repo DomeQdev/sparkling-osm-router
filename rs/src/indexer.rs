@@ -183,7 +183,9 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         adjacency_list,
         turn_restrictions,
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
+        ways_map: FxHashMap::from_iter(graph.ways.clone()),
         vehicle_type,
+        profile: graph.profile.clone(),
     }
 }
 

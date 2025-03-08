@@ -1,5 +1,5 @@
 use crate::errors::{GraphError, Result};
-use crate::graph::{Graph, Node};
+use crate::graph::{Graph, Node, Profile};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -75,7 +75,9 @@ pub struct RouteGraph {
     pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
     pub turn_restrictions: Vec<TurnRestrictionData>,
     pub nodes_map: FxHashMap<i64, Node>,
+    pub ways_map: FxHashMap<i64, crate::graph::Way>,
     pub vehicle_type: Option<String>,
+    pub profile: Option<Profile>,
 }
 
 impl Graph {
@@ -103,14 +105,11 @@ impl Graph {
 
         let direct_distance =
             haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
+
         let timeout_duration = if direct_distance < 20.0 {
             Duration::from_secs(60)
-        } else if direct_distance < 50.0 {
-            Duration::from_secs(120)
         } else if direct_distance < 100.0 {
             Duration::from_secs(300)
-        } else if direct_distance < 200.0 {
-            Duration::from_secs(600)
         } else if direct_distance < 500.0 {
             Duration::from_secs(1200)
         } else {
@@ -170,42 +169,15 @@ fn find_route_astar(
     let direct_distance =
         haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
 
-    let distance_multiplier = if direct_distance < 0.1 {
-        50.0
-    } else if direct_distance < 0.5 {
-        40.0
-    } else if direct_distance < 1.0 {
-        30.0
-    } else if direct_distance < 5.0 {
-        20.0
-    } else if direct_distance < 20.0 {
-        15.0
-    } else if direct_distance < 50.0 {
-        20.0
+    let max_iterations = if direct_distance < 20.0 {
+        1_000_000
     } else if direct_distance < 100.0 {
-        25.0
-    } else if direct_distance < 200.0 {
-        40.0
+        5_000_000
     } else if direct_distance < 500.0 {
-        60.0
+        20_000_000
     } else {
-        80.0
+        50_000_000
     };
-
-    let urban_factor = if direct_distance < 0.1 {
-        6.0
-    } else if direct_distance < 0.5 {
-        5.0
-    } else if direct_distance < 2.0 {
-        4.0
-    } else if direct_distance < 5.0 {
-        3.0
-    } else {
-        1.0
-    };
-
-    let max_search_distance = direct_distance * distance_multiplier * urban_factor;
-    let mut best_distance_so_far = f64::MAX;
 
     let mut open_set = BinaryHeap::new();
     let mut came_from = FxHashMap::default();
@@ -213,33 +185,17 @@ fn find_route_astar(
     let mut visited_nodes = FxHashMap::default();
     let mut first_segment = true;
 
-    let mut direct_distances = FxHashMap::default();
-
     g_score.insert(start_node_id, 0);
-    direct_distances.insert(start_node_id, direct_distance);
 
     open_set.push(NodeWithPrevious {
         node_id: start_node_id,
         previous_node_id: None,
         previous_way_id: None,
         cost: 0,
-        estimated_total_cost: heuristic_cost(graph, start_node_id, end_node),
+        estimated_total_cost: heuristic_cost(start_node, end_node),
     });
 
     let mut iterations = 0;
-    let max_iterations = if direct_distance < 20.0 {
-        1_000_000
-    } else if direct_distance < 50.0 {
-        2_000_000
-    } else if direct_distance < 100.0 {
-        5_000_000
-    } else if direct_distance < 200.0 {
-        15_000_000
-    } else if direct_distance < 500.0 {
-        30_000_000
-    } else {
-        50_000_000
-    };
 
     while let Some(current) = open_set.pop() {
         iterations += 1;
@@ -251,48 +207,14 @@ fn find_route_astar(
         let current_node_id = current.node_id;
         let current_g_score = *g_score.get(&current_node_id).unwrap_or(&i64::MAX);
 
-        if visited_nodes.contains_key(&(
+        let visit_key = (
             current_node_id,
             current.previous_node_id,
             current.previous_way_id,
-        )) {
+        );
+
+        if visited_nodes.contains_key(&visit_key) {
             continue;
-        }
-
-        let rejection_factor = if direct_distance < 0.1 {
-            50.0
-        } else if direct_distance < 0.5 {
-            30.0
-        } else if direct_distance < 1.0 {
-            20.0
-        } else if direct_distance < 5.0 {
-            15.0
-        } else if direct_distance < 20.0 {
-            10.0
-        } else if direct_distance < 50.0 {
-            8.0
-        } else if direct_distance < 100.0 {
-            8.0
-        } else if direct_distance < 200.0 {
-            12.0
-        } else {
-            15.0
-        };
-
-        if let Some(&current_direct_distance) = direct_distances.get(&current_node_id) {
-            let min_threshold = if direct_distance < 0.1 {
-                3.0
-            } else if direct_distance < 0.5 {
-                2.0
-            } else if direct_distance < 1.0 {
-                1.0
-            } else {
-                0.0
-            };
-
-            if current_direct_distance > (best_distance_so_far + min_threshold) * rejection_factor {
-                continue;
-            }
         }
 
         if current_node_id == end_node_id {
@@ -300,237 +222,35 @@ fn find_route_astar(
             return Ok(Some(RouteResult { nodes, ways }));
         }
 
-        visited_nodes.insert(
-            (
-                current_node_id,
-                current.previous_node_id,
-                current.previous_way_id,
-            ),
-            true,
-        );
-
-        if let Some(&current_direct_distance) = direct_distances.get(&current_node_id) {
-            if current_direct_distance < best_distance_so_far {
-                best_distance_so_far = current_direct_distance;
-            }
-        }
+        visited_nodes.insert(visit_key, true);
 
         let using_initial_bearing = first_segment && initial_bearing.is_some();
         first_segment = false;
 
         if let Some(edges) = graph.adjacency_list.get(&current_node_id) {
             if using_initial_bearing {
-                let desired_bearing = initial_bearing.unwrap();
-                let current_node = &graph.nodes_map[&current_node_id];
-                let mut filtered_edges = Vec::with_capacity(edges.len());
-
-                for edge in edges {
-                    if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
-                        let edge_direct_distance = haversine_distance(
-                            to_node.lat,
-                            to_node.lon,
-                            end_node.lat,
-                            end_node.lon,
-                        );
-
-                        direct_distances.insert(edge.to_node, edge_direct_distance);
-
-                        let current_direct_distance = direct_distances
-                            .get(&current_node_id)
-                            .unwrap_or(&direct_distance);
-                        if direct_distance < 0.1 {
-                            if edge_direct_distance > max_search_distance * 3.0
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance < 0.5 {
-                            if edge_direct_distance > max_search_distance * 2.5
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance < 2.0 {
-                            if edge_direct_distance > max_search_distance * 1.8
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance > 50.0
-                            && *current_direct_distance < direct_distance * 0.1
-                        {
-                        } else if direct_distance > 200.0
-                            && edge_direct_distance > max_search_distance * 0.9
-                            && edge.to_node != end_node_id
-                        {
-                            continue;
-                        } else if edge_direct_distance > max_search_distance * 1.2
-                            && edge.to_node != end_node_id
-                        {
-                            continue;
-                        }
-
-                        let edge_bearing = calculate_bearing(
-                            current_node.lat,
-                            current_node.lon,
-                            to_node.lat,
-                            to_node.lon,
-                        );
-                        let bearing_diff = bearing_difference(desired_bearing, edge_bearing).abs();
-
-                        if bearing_diff <= 90.0 {
-                            let bearing_score = ((90.0 - bearing_diff) / 90.0 * 100.0) as i64;
-                            filtered_edges.push((edge, bearing_score));
-                        } else {
-                            filtered_edges.push((edge, -1));
-                        }
-                    }
-                }
-
-                filtered_edges.sort_by(|a, b| b.1.cmp(&a.1));
-
-                let good_edges: Vec<_> = filtered_edges
-                    .iter()
-                    .filter(|(_, score)| *score > 0)
-                    .collect();
-
-                if !good_edges.is_empty() {
-                    let top_edges = if good_edges.len() > 3 {
-                        &good_edges[0..3]
-                    } else {
-                        &good_edges[..]
-                    };
-
-                    for (edge, _) in top_edges {
-                        let tentative_g_score = current_g_score + edge.cost;
-
-                        if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
-                            if is_turn_allowed(
-                                graph,
-                                current.previous_way_id,
-                                current.previous_node_id,
-                                current_node_id,
-                                edge.way_id,
-                                edge.to_node,
-                            ) {
-                                came_from.insert(edge.to_node, (current_node_id, edge.way_id));
-                                g_score.insert(edge.to_node, tentative_g_score);
-
-                                open_set.push(NodeWithPrevious {
-                                    node_id: edge.to_node,
-                                    previous_node_id: Some(current_node_id),
-                                    previous_way_id: Some(edge.way_id),
-                                    cost: tentative_g_score,
-                                    estimated_total_cost: tentative_g_score
-                                        + heuristic_cost(graph, edge.to_node, end_node),
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    for edge in edges {
-                        if Some(edge.to_node) != current.previous_node_id {
-                            let tentative_g_score = current_g_score + edge.cost;
-
-                            if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX)
-                            {
-                                if is_turn_allowed(
-                                    graph,
-                                    current.previous_way_id,
-                                    current.previous_node_id,
-                                    current_node_id,
-                                    edge.way_id,
-                                    edge.to_node,
-                                ) {
-                                    came_from.insert(edge.to_node, (current_node_id, edge.way_id));
-                                    g_score.insert(edge.to_node, tentative_g_score);
-
-                                    open_set.push(NodeWithPrevious {
-                                        node_id: edge.to_node,
-                                        previous_node_id: Some(current_node_id),
-                                        previous_way_id: Some(edge.way_id),
-                                        cost: tentative_g_score,
-                                        estimated_total_cost: tentative_g_score
-                                            + heuristic_cost(graph, edge.to_node, end_node),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+                process_edges_with_bearing(
+                    graph,
+                    edges,
+                    current,
+                    initial_bearing.unwrap(),
+                    end_node,
+                    &mut open_set,
+                    &mut came_from,
+                    &mut g_score,
+                    current_g_score,
+                );
             } else {
-                for edge in edges {
-                    if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
-                        let edge_direct_distance = haversine_distance(
-                            to_node.lat,
-                            to_node.lon,
-                            end_node.lat,
-                            end_node.lon,
-                        );
-
-                        direct_distances.insert(edge.to_node, edge_direct_distance);
-
-                        let current_direct_distance = direct_distances
-                            .get(&current_node_id)
-                            .unwrap_or(&direct_distance);
-                        if direct_distance < 0.1 {
-                            if edge_direct_distance > max_search_distance * 3.0
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance < 0.5 {
-                            if edge_direct_distance > max_search_distance * 2.5
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance < 2.0 {
-                            if edge_direct_distance > max_search_distance * 1.8
-                                && edge.to_node != end_node_id
-                            {
-                                continue;
-                            }
-                        } else if direct_distance > 50.0
-                            && *current_direct_distance < direct_distance * 0.1
-                        {
-                        } else if direct_distance > 200.0
-                            && edge_direct_distance > max_search_distance * 0.9
-                            && edge.to_node != end_node_id
-                        {
-                            continue;
-                        } else if edge_direct_distance > max_search_distance * 1.2
-                            && edge.to_node != end_node_id
-                        {
-                            continue;
-                        }
-                    }
-
-                    let tentative_g_score = current_g_score + edge.cost;
-
-                    if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
-                        if is_turn_allowed(
-                            graph,
-                            current.previous_way_id,
-                            current.previous_node_id,
-                            current_node_id,
-                            edge.way_id,
-                            edge.to_node,
-                        ) {
-                            came_from.insert(edge.to_node, (current_node_id, edge.way_id));
-                            g_score.insert(edge.to_node, tentative_g_score);
-
-                            open_set.push(NodeWithPrevious {
-                                node_id: edge.to_node,
-                                previous_node_id: Some(current_node_id),
-                                previous_way_id: Some(edge.way_id),
-                                cost: tentative_g_score,
-                                estimated_total_cost: tentative_g_score
-                                    + heuristic_cost(graph, edge.to_node, end_node),
-                            });
-                        }
-                    }
-                }
+                process_edges(
+                    graph,
+                    edges,
+                    current,
+                    end_node,
+                    &mut open_set,
+                    &mut came_from,
+                    &mut g_score,
+                    current_g_score,
+                );
             }
         }
     }
@@ -538,31 +258,170 @@ fn find_route_astar(
     Ok(None)
 }
 
-fn heuristic_cost(graph: &RouteGraph, node_id: i64, end_node: &Node) -> i64 {
-    if let Some(node) = graph.nodes_map.get(&node_id) {
-        let lat1_rad = node.lat.to_radians();
-        let lat2_rad = end_node.lat.to_radians();
-        let lon_diff_rad = (node.lon - end_node.lon).to_radians();
+fn process_edges(
+    graph: &RouteGraph,
+    edges: &[RouteEdge],
+    current: NodeWithPrevious,
+    end_node: &Node,
+    open_set: &mut BinaryHeap<NodeWithPrevious>,
+    came_from: &mut FxHashMap<i64, (i64, i64)>,
+    g_score: &mut FxHashMap<i64, i64>,
+    current_g_score: i64,
+) {
+    for edge in edges {
+        if Some(edge.to_node) == current.previous_node_id {
+            continue;
+        }
 
-        let x = lon_diff_rad * lat1_rad.cos();
-        let y = lat2_rad - lat1_rad;
+        let edge_cost = calculate_edge_cost(graph, &edge);
+        let tentative_g_score = current_g_score + edge_cost;
 
-        let distance = ((x * x + y * y).sqrt()) * 6371000.0;
+        if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
+            if is_turn_allowed(
+                graph,
+                current.previous_way_id,
+                current.previous_node_id,
+                current.node_id,
+                edge.way_id,
+                edge.to_node,
+            ) {
+                came_from.insert(edge.to_node, (current.node_id, edge.way_id));
+                g_score.insert(edge.to_node, tentative_g_score);
 
-        let distance_km = distance / 1000.0;
-        let heuristic_factor = if distance_km < 0.1 {
-            15.0
-        } else if distance_km < 0.5 {
-            20.0
-        } else if distance_km < 2.0 {
-            25.0
-        } else {
-            30.0
-        };
+                if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
+                    let h_cost = heuristic_cost(to_node, end_node);
 
-        return (distance * heuristic_factor) as i64;
+                    open_set.push(NodeWithPrevious {
+                        node_id: edge.to_node,
+                        previous_node_id: Some(current.node_id),
+                        previous_way_id: Some(edge.way_id),
+                        cost: tentative_g_score,
+                        estimated_total_cost: tentative_g_score + h_cost,
+                    });
+                }
+            }
+        }
     }
-    0
+}
+
+fn process_edges_with_bearing(
+    graph: &RouteGraph,
+    edges: &[RouteEdge],
+    current: NodeWithPrevious,
+    desired_bearing: f64,
+    end_node: &Node,
+    open_set: &mut BinaryHeap<NodeWithPrevious>,
+    came_from: &mut FxHashMap<i64, (i64, i64)>,
+    g_score: &mut FxHashMap<i64, i64>,
+    current_g_score: i64,
+) {
+    let current_node = &graph.nodes_map[&current.node_id];
+    let mut filtered_edges = Vec::with_capacity(edges.len());
+
+    for edge in edges {
+        if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
+            let edge_bearing =
+                calculate_bearing(current_node.lat, current_node.lon, to_node.lat, to_node.lon);
+            let bearing_diff = bearing_difference(desired_bearing, edge_bearing).abs();
+
+            if bearing_diff <= 90.0 {
+                let bearing_score = ((90.0 - bearing_diff) / 90.0 * 100.0) as i64;
+                filtered_edges.push((edge, bearing_score));
+            } else {
+                filtered_edges.push((edge, -1));
+            }
+        }
+    }
+
+    filtered_edges.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let good_edges: Vec<_> = filtered_edges
+        .iter()
+        .filter(|(_, score)| *score > 0)
+        .collect();
+
+    let edges_to_process: Vec<&(&RouteEdge, i64)> = if !good_edges.is_empty() {
+        if good_edges.len() > 3 {
+            good_edges[0..3].to_vec()
+        } else {
+            good_edges
+        }
+    } else {
+        filtered_edges.iter().collect()
+    };
+
+    for edge_ref in &edges_to_process {
+        let (edge, _) = *edge_ref;
+        let edge_cost = calculate_edge_cost(graph, &edge);
+        let tentative_g_score = current_g_score + edge_cost;
+
+        if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
+            if is_turn_allowed(
+                graph,
+                current.previous_way_id,
+                current.previous_node_id,
+                current.node_id,
+                edge.way_id,
+                edge.to_node,
+            ) {
+                came_from.insert(edge.to_node, (current.node_id, edge.way_id));
+                g_score.insert(edge.to_node, tentative_g_score);
+
+                if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
+                    let h_cost = heuristic_cost(to_node, end_node);
+
+                    open_set.push(NodeWithPrevious {
+                        node_id: edge.to_node,
+                        previous_node_id: Some(current.node_id),
+                        previous_way_id: Some(edge.way_id),
+                        cost: tentative_g_score,
+                        estimated_total_cost: tentative_g_score + h_cost,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
+    let distance = haversine_distance(node.lat, node.lon, end_node.lat, end_node.lon);
+
+    let heuristic_factor = 25.0;
+
+    return (distance * 1000.0 * heuristic_factor) as i64;
+}
+
+fn calculate_edge_cost(graph: &RouteGraph, edge: &RouteEdge) -> i64 {
+    let base_cost = edge.cost;
+
+    if graph.profile.is_none() || !graph.ways_map.contains_key(&edge.way_id) {
+        return base_cost;
+    }
+
+    let profile = graph.profile.as_ref().unwrap();
+    let way_id = edge.way_id;
+
+    if let Some(way) = graph.ways_map.get(&way_id) {
+        if let Some(tag_value) = way.tags.get(&profile.key) {
+            if let Some(penalty) = profile.penalties.penalties.get(tag_value) {
+                return adjust_cost(base_cost, *penalty);
+            }
+        }
+
+        if let Some(default_penalty) = profile.penalties.default {
+            return adjust_cost(base_cost, default_penalty);
+        }
+    }
+
+    base_cost
+}
+
+fn adjust_cost(base_cost: i64, penalty: i64) -> i64 {
+    if penalty == 0 {
+        return i64::MAX / 2;
+    }
+
+    base_cost * penalty / 10
 }
 
 fn reconstruct_path_with_ways(
