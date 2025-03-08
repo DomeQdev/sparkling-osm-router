@@ -17,6 +17,7 @@ mod offset;
 mod parser;
 mod routing;
 mod search;
+mod simplify;
 mod utils;
 
 type SharedGraph = Arc<RwLock<Graph>>;
@@ -269,11 +270,9 @@ fn cleanup_graph_store_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     Ok(cx.boolean(true))
 }
 
-fn offset_route_shape_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
+fn get_shape_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let nodes = cx.argument::<JsArray>(1)?;
-    let offset_meters = cx.argument::<JsNumber>(2)?.value(&mut cx);
-    let offset_side = cx.argument::<JsNumber>(3)?.value(&mut cx) as i8;
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(graph) => graph.clone(),
@@ -286,11 +285,77 @@ fn offset_route_shape_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
         nodes_vec.push(node_id);
     }
 
-    let offset_points =
-        graph_store
-            .read()
-            .unwrap()
-            .offset_route_shape(&nodes_vec, offset_meters, offset_side);
+    let graph = graph_store.read().unwrap();
+    let node_data: Vec<_> = nodes_vec
+        .iter()
+        .filter_map(|&id| graph.nodes.get(&id))
+        .collect();
+
+    let result = JsArray::new(&mut cx, node_data.len());
+    for (i, node) in node_data.iter().enumerate() {
+        let point_array = JsArray::new(&mut cx, 2);
+        let lon = cx.number(node.lon);
+        let lat = cx.number(node.lat);
+        point_array.set(&mut cx, 0, lon)?;
+        point_array.set(&mut cx, 1, lat)?;
+        result.set(&mut cx, i as u32, point_array)?;
+    }
+
+    Ok(result)
+}
+
+fn simplify_shape_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let nodes = cx.argument::<JsArray>(1)?;
+    let epsilon = cx.argument::<JsNumber>(2)?.value(&mut cx);
+
+    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(graph) => graph.clone(),
+        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    };
+
+    let mut nodes_vec = Vec::with_capacity(nodes.len(&mut cx) as usize);
+    for i in 0..nodes.len(&mut cx) {
+        let node_id = nodes.get::<JsNumber, _, u32>(&mut cx, i)?.value(&mut cx) as i64;
+        nodes_vec.push(node_id);
+    }
+
+    let simplified_points = graph_store
+        .read()
+        .unwrap()
+        .simplify_shape(&nodes_vec, epsilon);
+
+    let result = JsArray::new(&mut cx, simplified_points.len());
+    for (i, point) in simplified_points.iter().enumerate() {
+        let point_array = JsArray::new(&mut cx, 2);
+        let lon = cx.number(point.lon);
+        let lat = cx.number(point.lat);
+        point_array.set(&mut cx, 0, lon)?;
+        point_array.set(&mut cx, 1, lat)?;
+        result.set(&mut cx, i as u32, point_array)?;
+    }
+
+    Ok(result)
+}
+
+fn offset_points_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let points_array = cx.argument::<JsArray>(0)?;
+    let offset_meters = cx.argument::<JsNumber>(1)?.value(&mut cx);
+    let offset_side = cx.argument::<JsNumber>(2)?.value(&mut cx) as i8;
+
+    let mut points = Vec::with_capacity(points_array.len(&mut cx) as usize);
+
+    for i in 0..points_array.len(&mut cx) {
+        let point = points_array.get::<JsArray, _, u32>(&mut cx, i)?;
+        if point.len(&mut cx) < 2 {
+            return cx.throw_error("Invalid point format in shape array");
+        }
+        let lon = point.get::<JsNumber, _, u32>(&mut cx, 0)?.value(&mut cx);
+        let lat = point.get::<JsNumber, _, u32>(&mut cx, 1)?.value(&mut cx);
+        points.push((lon, lat));
+    }
+
+    let offset_points = offset::offset_points(&points, offset_meters, offset_side);
 
     let result = JsArray::new(&mut cx, offset_points.len());
     for (i, point) in offset_points.iter().enumerate() {
@@ -320,7 +385,9 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("route", route_rust)?;
     cx.export_function("getNode", get_node_rust)?;
     cx.export_function("getWay", get_way_rust)?;
-    cx.export_function("offsetRouteShape", offset_route_shape_rust)?;
+    cx.export_function("getShape", get_shape_rust)?;
+    cx.export_function("simplifyShape", simplify_shape_rust)?;
+    cx.export_function("offsetPoints", offset_points_rust)?;
     cx.export_function("cleanupGraphStore", cleanup_graph_store_rust)?;
     Ok(())
 }

@@ -8,10 +8,12 @@ import {
     createGraphStore,
     findNearestNode,
     getNode,
+    getShape as getShapeRust,
     getWay,
     loadAndIndexGraph,
-    offsetShape,
+    offsetPoints,
     route,
+    simplifyShape as simplifyShapeRust,
 } from "../RustModules";
 import loadOSMGraph from "./loadOSMGraph";
 
@@ -182,29 +184,37 @@ class Graph {
      * @param nodes - Object containing array of node IDs
      * @returns Array of [longitude, latitude] coordinates
      */
-    getShape = ({ nodes }: { nodes: number[] }) => {
-        const nodeData = this.getNodes({ nodes });
+    getShape = ({ nodes }: { nodes: number[] }): Location[] => {
+        if (this.graph === null) throw new Error("Graph is not loaded");
+        if (!nodes.length) return [];
 
-        return nodeData.map((node) => [node.lon, node.lat]);
+        return getShapeRust(this.graph, nodes);
     };
 
     /**
-     * Gets an offset shape for a list of nodes, useful for drawing paths with offsets.
+     * Returns a simplified version of a route shape using the Ramer-Douglas-Peucker algorithm.
      * @param nodes - Object containing array of node IDs
+     * @param epsilon - Simplification tolerance value (higher value = more simplification)
+     * @returns Array of simplified [longitude, latitude] coordinates
+     */
+    getSimplifiedShape = ({ nodes }: { nodes: number[] }, epsilon: number = 1e-5): Location[] => {
+        if (this.graph === null) throw new Error("Graph is not loaded");
+        if (!nodes.length) return [];
+
+        return simplifyShapeRust(this.graph, nodes, epsilon);
+    };
+
+    /**
+     * Gets an offset shape for a list of coordinates, useful for drawing paths with offsets.
+     * @param shape - Array of [longitude, latitude] coordinates
      * @param offsetMeters - Offset distance in meters (default: 1.5)
      * @param offsetSide - Side of the offset, 1 for right, -1 for left (default: 1)
      * @returns Array of offset [longitude, latitude] coordinates
-     * @throws If the graph is not loaded or node list is empty
      */
-    getOffsetShape = (
-        { nodes }: { nodes: number[] },
-        offsetMeters: number = 1.5,
-        offsetSide: 1 | -1 = 1
-    ): Location[] => {
-        if (!this.graph) throw new Error("Graph is not loaded");
-        if (!nodes.length) return [];
+    offsetShape = (shape: Location[], offsetMeters: number = 1.5, offsetSide: 1 | -1 = 1): Location[] => {
+        if (!shape.length) return [];
 
-        return offsetShape(this.graph, nodes, offsetMeters, offsetSide);
+        return offsetPoints(shape, offsetMeters, offsetSide);
     };
 
     /**

@@ -34,11 +34,21 @@ export const getNode: (node: number, graphId: number) => IOsmNodeData | null = b
 
 export const getWay: (way: number, graphId: number) => IOsmWayData | null = binding.getWay;
 
-export const offsetShape: (
-    graphId: number,
-    nodes: number[],
+export const getShape: (
+    graphId: number, 
+    nodes: number[]
+) => Location[] = binding.getShape;
+
+export const simplifyShape: (
+    graphId: number, 
+    nodes: number[], 
+    epsilon: number
+) => Location[] = binding.simplifyShape;
+
+export const offsetPoints: (
+    points: Location[],
     offsetMeters: number,
     offsetSide: 1 | -1
-) => Location[] = binding.offsetRouteShape;
+) => Location[] = binding.offsetPoints;
 
 export const cleanupGraphStore: () => boolean = binding.cleanupGraphStore;

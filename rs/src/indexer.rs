@@ -59,11 +59,14 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         .and_then(|profile| profile.vehicle_type.clone());
 
     for way in graph.ways.values() {
-        let is_oneway = if way
+        let is_roundabout = way
             .tags
             .get("junction")
-            .map_or(false, |v| v == "roundabout")
-        {
+            .map_or(false, |v| v == "roundabout");
+
+        let is_oneway = if way.tags.get("oneway").map_or(false, |v| v == "no") {
+            false
+        } else if is_roundabout {
             true
         } else {
             way.tags.get("oneway").map_or(false, |v| v == "yes")

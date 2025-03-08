@@ -1,5 +1,3 @@
-use crate::graph::{Graph, Node};
-
 const EARTH_RADIUS: f64 = 6371000.0;
 
 #[derive(Clone, Debug)]
@@ -8,79 +6,77 @@ pub struct OffsetPoint {
     pub lat: f64,
 }
 
-impl Graph {
-    pub fn offset_route_shape(
-        &self,
-        nodes: &[i64],
-        offset_meters: f64,
-        offset_side: i8,
-    ) -> Vec<OffsetPoint> {
-        if nodes.len() < 2 {
-            return Vec::new();
-        }
-
-        let mut segments = Vec::with_capacity(nodes.len() - 1);
-        for i in 0..nodes.len() - 1 {
-            if let (Some(node1), Some(node2)) =
-                (self.nodes.get(&nodes[i]), self.nodes.get(&nodes[i + 1]))
-            {
-                segments.push(process_segment(
-                    node1,
-                    node2,
-                    offset_meters * offset_side as f64,
-                ));
-            }
-        }
-
-        let mut result = Vec::with_capacity(nodes.len());
-
-        if !segments.is_empty() {
-            if let Some(first_segment) = segments.first() {
-                if let Some(first_point) = first_segment.first() {
-                    result.push(first_point.clone());
-                }
-            }
-
-            for i in 0..segments.len() - 1 {
-                let segment = &segments[i];
-                let next_segment = &segments[i + 1];
-
-                if segment.len() < 2 || next_segment.len() < 2 {
-                    continue;
-                }
-
-                if let Some(intersection) =
-                    find_intersection(&segment[0], &segment[1], &next_segment[0], &next_segment[1])
-                {
-                    result.push(intersection);
-                } else {
-                    result.push(segment[1].clone());
-                }
-            }
-
-            if let Some(last_segment) = segments.last() {
-                if let Some(last_point) = last_segment.last() {
-                    if result.last().map_or(true, |p| {
-                        (p.lon - last_point.lon).abs() > 1e-10
-                            || (p.lat - last_point.lat).abs() > 1e-10
-                    }) {
-                        result.push(last_point.clone());
-                    }
-                }
-            }
-        }
-
-        result
+pub fn offset_points(
+    points: &[(f64, f64)],
+    offset_meters: f64,
+    offset_side: i8,
+) -> Vec<OffsetPoint> {
+    if points.len() < 2 {
+        return Vec::new();
     }
+
+    let mut segments = Vec::with_capacity(points.len() - 1);
+    for i in 0..points.len() - 1 {
+        let (lon1, lat1) = points[i];
+        let (lon2, lat2) = points[i + 1];
+
+        segments.push(process_point_segment(
+            lon1,
+            lat1,
+            lon2,
+            lat2,
+            offset_meters * offset_side as f64,
+        ));
+    }
+
+    let mut result = Vec::with_capacity(points.len());
+
+    if !segments.is_empty() {
+        if let Some(first_segment) = segments.first() {
+            if let Some(first_point) = first_segment.first() {
+                result.push(first_point.clone());
+            }
+        }
+
+        for i in 0..segments.len() - 1 {
+            let segment = &segments[i];
+            let next_segment = &segments[i + 1];
+
+            if segment.len() < 2 || next_segment.len() < 2 {
+                continue;
+            }
+
+            if let Some(intersection) =
+                find_intersection(&segment[0], &segment[1], &next_segment[0], &next_segment[1])
+            {
+                result.push(intersection);
+            } else {
+                result.push(segment[1].clone());
+            }
+        }
+
+        if let Some(last_segment) = segments.last() {
+            if let Some(last_point) = last_segment.last() {
+                if result.last().map_or(true, |p| {
+                    (p.lon - last_point.lon).abs() > 1e-10 || (p.lat - last_point.lat).abs() > 1e-10
+                }) {
+                    result.push(last_point.clone());
+                }
+            }
+        }
+    }
+
+    result
 }
 
-fn process_segment(point1: &Node, point2: &Node, offset_meters: f64) -> Vec<OffsetPoint> {
+fn process_point_segment(
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    offset_meters: f64,
+) -> Vec<OffsetPoint> {
     let offset_deg = offset_meters / (EARTH_RADIUS * std::f64::consts::PI / 180.0);
-
-    let lon1 = point1.lon;
-    let lat1 = point1.lat;
-    let lon2 = point2.lon;
-    let lat2 = point2.lat;
 
     let avg_lat_rad = ((lat1 + lat2) / 2.0).to_radians();
     let lon_factor = avg_lat_rad.cos();

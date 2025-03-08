@@ -158,10 +158,23 @@ Calculates a route between two nodes.
 
 Returns the route shape as an array of coordinates.
 
+#### getSimplifiedShape(route: RouteResult, epsilon: number): Location[]
+
+Returns a simplified route shape as an array of coordinates.
+- `epsilon` - simplification tolerance (higher = more simplification)
+
 #### getOffsetShape(route: RouteResult, offsetMeters: number = 1.5, offsetSide: 1 | -1 = 1): Location[]
 
 Returns the route shape with an offset, useful for visualization.
 
+-   `offsetMeters` - offset distance in meters (default: 1.5)
+-   `offsetSide` - offset side, 1 for right, -1 for left (default: 1)
+
+#### offsetShape(shape: Location[], offsetMeters: number = 1.5, offsetSide: 1 | -1 = 1): Location[]
+
+Returns an offset shape for given coordinates.
+
+-   `shape` - array of coordinates [longitude, latitude]
 -   `offsetMeters` - offset distance in meters (default: 1.5)
 -   `offsetSide` - offset side, 1 for right, -1 for left (default: 1)
 
@@ -231,6 +244,22 @@ await railGraph.loadGraph();
 // ... further operations as above
 ```
 
+### Route Shape Simplification
+
+```typescript
+// Oblicz trasę
+const route = await carGraph.getRoute(startNode, endNode);
+
+// Pobierz pełny kształt trasy
+const fullShape = carGraph.getShape(route);
+
+// Pobierz uproszczony kształt (mniej punktów, szybsze renderowanie)
+const simplifiedShape = carGraph.getSimplifiedShape(route, 0.0001);
+
+// Użyj offsetu dla uproszczonego kształtu
+const offsetShape = carGraph.offsetShape(simplifiedShape, 2.0, 1);
+```
+
 ## Advanced Usage
 
 ### Parallel Calculation of Multiple Routes
@@ -268,4 +297,3 @@ const bikeGraph = new Graph({
         vehicle_type: "bicycle",
     },
 });
-```
