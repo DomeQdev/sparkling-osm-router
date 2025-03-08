@@ -268,12 +268,36 @@ fn process_edges(
     g_score: &mut FxHashMap<i64, i64>,
     current_g_score: i64,
 ) {
+    let current_direction = if let Some(previous_node_id) = current.previous_node_id {
+        if let (Some(prev_node), Some(curr_node)) = (
+            graph.nodes_map.get(&previous_node_id),
+            graph.nodes_map.get(&current.node_id),
+        ) {
+            Some(calculate_bearing(
+                prev_node.lat,
+                prev_node.lon,
+                curr_node.lat,
+                curr_node.lon,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     for edge in edges {
         if Some(edge.to_node) == current.previous_node_id {
             continue;
         }
 
-        let edge_cost = calculate_edge_cost(graph, &edge);
+        let edge_cost = calculate_edge_cost(
+            graph,
+            &edge,
+            current.previous_way_id,
+            current.node_id,
+            current_direction,
+        );
         let tentative_g_score = current_g_score + edge_cost;
 
         if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
@@ -352,7 +376,13 @@ fn process_edges_with_bearing(
 
     for edge_ref in &edges_to_process {
         let (edge, _) = *edge_ref;
-        let edge_cost = calculate_edge_cost(graph, &edge);
+        let edge_cost = calculate_edge_cost(
+            graph,
+            &edge,
+            current.previous_way_id,
+            current.node_id,
+            Some(desired_bearing),
+        );
         let tentative_g_score = current_g_score + edge_cost;
 
         if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
@@ -391,11 +421,47 @@ fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
     return (distance * 1000.0 * heuristic_factor) as i64;
 }
 
-fn calculate_edge_cost(graph: &RouteGraph, edge: &RouteEdge) -> i64 {
+fn calculate_edge_cost(
+    graph: &RouteGraph,
+    edge: &RouteEdge,
+    previous_way_id: Option<i64>,
+    current_node_id: i64,
+    current_direction: Option<f64>,
+) -> i64 {
     let base_cost = edge.cost;
+    let mut adjusted_cost = base_cost;
+
+    if let (Some(direction), Some(to_node)) =
+        (current_direction, graph.nodes_map.get(&edge.to_node))
+    {
+        if let Some(current_node) = graph.nodes_map.get(&current_node_id) {
+            let next_direction =
+                calculate_bearing(current_node.lat, current_node.lon, to_node.lat, to_node.lon);
+
+            let angle_diff = bearing_difference(direction, next_direction).abs();
+
+            if angle_diff < 20.0 {
+                adjusted_cost = (adjusted_cost as f64 * 0.7) as i64;
+            } else if angle_diff < 45.0 {
+                adjusted_cost = (adjusted_cost as f64 * 0.85) as i64;
+            } else if angle_diff > 135.0 {
+                adjusted_cost *= 2;
+            }
+
+            if let Some(prev_way_id) = previous_way_id {
+                if prev_way_id == edge.way_id && angle_diff < 45.0 {
+                    adjusted_cost = (adjusted_cost as f64 * 0.9) as i64;
+                }
+            }
+        }
+    } else if let Some(prev_way_id) = previous_way_id {
+        if prev_way_id == edge.way_id {
+            adjusted_cost = (adjusted_cost as f64 * 0.9) as i64;
+        }
+    }
 
     if graph.profile.is_none() || !graph.ways_map.contains_key(&edge.way_id) {
-        return base_cost;
+        return adjusted_cost;
     }
 
     let profile = graph.profile.as_ref().unwrap();
@@ -404,16 +470,16 @@ fn calculate_edge_cost(graph: &RouteGraph, edge: &RouteEdge) -> i64 {
     if let Some(way) = graph.ways_map.get(&way_id) {
         if let Some(tag_value) = way.tags.get(&profile.key) {
             if let Some(penalty) = profile.penalties.penalties.get(tag_value) {
-                return adjust_cost(base_cost, *penalty);
+                return adjust_cost(adjusted_cost, *penalty);
             }
         }
 
         if let Some(default_penalty) = profile.penalties.default {
-            return adjust_cost(base_cost, default_penalty);
+            return adjust_cost(adjusted_cost, default_penalty);
         }
     }
 
-    base_cost
+    adjusted_cost
 }
 
 fn adjust_cost(base_cost: i64, penalty: i64) -> i64 {
