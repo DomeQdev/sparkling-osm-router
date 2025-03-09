@@ -179,6 +179,23 @@ impl Graph {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+struct VisitKey {
+    node_id: i64,
+    prev_node: i64,
+    prev_way: i64,
+}
+
+impl VisitKey {
+    fn new(node_id: i64, prev_node: Option<i64>, prev_way: Option<i64>) -> Self {
+        Self {
+            node_id,
+            prev_node: prev_node.unwrap_or(0),
+            prev_way: prev_way.unwrap_or(0),
+        }
+    }
+}
+
 fn find_route_astar(
     graph: &RouteGraph,
     start_node_id: i64,
@@ -211,8 +228,7 @@ fn find_route_astar(
         }
     };
 
-    let direct_distance =
-        haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
+    let direct_distance = estimate_distance(start_node, end_node);
 
     let max_iterations = if direct_distance < 20.0 {
         1_000_000
@@ -237,7 +253,7 @@ fn find_route_astar(
         previous_node_id: None,
         previous_way_id: None,
         cost: 0,
-        estimated_total_cost: heuristic_cost(start_node, end_node),
+        estimated_total_cost: heuristic_cost_optimized(start_node, end_node),
     });
 
     let mut iterations = 0;
@@ -250,9 +266,15 @@ fn find_route_astar(
         }
 
         let current_node_id = current.node_id;
+
+        if current_node_id == end_node_id {
+            let (nodes, ways) = reconstruct_path_with_ways(&came_from, end_node_id);
+            return Ok(Some(RouteResult { nodes, ways }));
+        }
+
         let current_g_score = *g_score.get(&current_node_id).unwrap_or(&i64::MAX);
 
-        let visit_key = (
+        let visit_key = VisitKey::new(
             current_node_id,
             current.previous_node_id,
             current.previous_way_id,
@@ -260,11 +282,6 @@ fn find_route_astar(
 
         if visited_nodes.contains_key(&visit_key) {
             continue;
-        }
-
-        if current_node_id == end_node_id {
-            let (nodes, ways) = reconstruct_path_with_ways(&came_from, end_node_id);
-            return Ok(Some(RouteResult { nodes, ways }));
         }
 
         visited_nodes.insert(visit_key, true);
@@ -303,6 +320,26 @@ fn find_route_astar(
     Ok(None)
 }
 
+fn heuristic_cost_optimized(node: &Node, end_node: &Node) -> i64 {
+    let distance = estimate_distance(node, end_node);
+    let heuristic_factor = 25.0;
+    return (distance * 1000.0 * heuristic_factor) as i64;
+}
+
+fn estimate_distance(node1: &Node, node2: &Node) -> f64 {
+    if (node1.lat - node2.lat).abs() < 0.1 && (node1.lon - node2.lon).abs() < 0.1 {
+        let lat_avg = (node1.lat + node2.lat) / 2.0;
+        let lat_factor = lat_avg.to_radians().cos();
+
+        let d_lat = (node1.lat - node2.lat).abs();
+        let d_lon = (node1.lon - node2.lon).abs() * lat_factor;
+
+        return 111.2 * (d_lat * d_lat + d_lon * d_lon).sqrt();
+    }
+
+    haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon)
+}
+
 fn process_edges(
     graph: &RouteGraph,
     edges: &[RouteEdge],
@@ -334,7 +371,7 @@ fn process_edges(
                 g_score.insert(edge.to_node, tentative_g_score);
 
                 if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
-                    let h_cost = heuristic_cost(to_node, end_node);
+                    let h_cost = heuristic_cost_optimized(to_node, end_node);
 
                     open_set.push(NodeWithPrevious {
                         node_id: edge.to_node,

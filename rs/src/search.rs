@@ -13,12 +13,12 @@ impl Graph {
         let query_point: [f64; 2] = [lon, lat];
         let actual_limit = limit.max(1);
 
-        let mut candidate_ways = Vec::new();
+        let mut candidate_ways = Vec::with_capacity(100);
         for way_envelope in self.way_rtree.nearest_neighbor_iter(&query_point).take(100) {
             candidate_ways.push(way_envelope.way_id);
         }
 
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::with_capacity(candidate_ways.len());
 
         for way_id in candidate_ways {
             if let Some((node_id, distance)) =
@@ -37,27 +37,31 @@ impl Graph {
             }
         }
 
-        
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        
         if candidates.len() > 1 && actual_limit > 1 {
-            
             let closest_node_distance = candidates[0].1;
-            
-            
             let distance_threshold = closest_node_distance * 3.0;
-            
-            
-            candidates.retain(|(_, distance, _)| *distance <= distance_threshold);
+
+            let mut valid_count = 0;
+            for i in 0..candidates.len() {
+                if candidates[i].1 <= distance_threshold {
+                    if i != valid_count {
+                        candidates.swap(i, valid_count);
+                    }
+                    valid_count += 1;
+                }
+            }
+            candidates.truncate(valid_count);
         }
-        
-        
-        let result = candidates
-            .into_iter()
-            .take(actual_limit)
-            .map(|(node_id, _, _)| node_id)
-            .collect();
+
+        let result_len = candidates.len().min(actual_limit);
+        let mut result = Vec::with_capacity(result_len);
+
+        for i in 0..result_len {
+            result.push(candidates[i].0);
+        }
 
         Ok(result)
     }

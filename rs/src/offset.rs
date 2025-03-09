@@ -15,8 +15,11 @@ pub fn offset_points(
         return Vec::new();
     }
 
-    let mut segments = Vec::with_capacity(points.len() - 1);
-    for i in 0..points.len() - 1 {
+    let points_count = points.len();
+    let mut segments = Vec::with_capacity(points_count - 1);
+    
+    
+    for i in 0..points_count - 1 {
         let (lon1, lat1) = points[i];
         let (lon2, lat2) = points[i + 1];
 
@@ -29,45 +32,53 @@ pub fn offset_points(
         ));
     }
 
-    let mut result = Vec::with_capacity(points.len());
+    
+    let mut result = Vec::with_capacity(points_count);
 
-    if !segments.is_empty() {
-        if let Some(first_segment) = segments.first() {
-            if let Some(first_point) = first_segment.first() {
-                result.push(first_point.clone());
-            }
+    if segments.is_empty() {
+        return result;
+    }
+    
+    
+    if let Some(first_segment) = segments.first() {
+        if let Some(first_point) = first_segment.first() {
+            result.push(first_point.clone());
+        }
+    }
+
+    
+    for i in 0..segments.len() - 1 {
+        let segment = &segments[i];
+        let next_segment = &segments[i + 1];
+
+        if segment.len() < 2 || next_segment.len() < 2 {
+            continue;
         }
 
-        for i in 0..segments.len() - 1 {
-            let segment = &segments[i];
-            let next_segment = &segments[i + 1];
-
-            if segment.len() < 2 || next_segment.len() < 2 {
-                continue;
-            }
-
-            if let Some(intersection) =
-                find_intersection(&segment[0], &segment[1], &next_segment[0], &next_segment[1])
-            {
-                result.push(intersection);
-            } else {
-                result.push(segment[1].clone());
-            }
+        
+        if let Some(intersection) =
+            find_intersection(&segment[0], &segment[1], &next_segment[0], &next_segment[1])
+        {
+            result.push(intersection);
+        } else {
+            result.push(segment[1].clone());
         }
+    }
 
-        if let Some(last_segment) = segments.last() {
-            if let Some(last_point) = last_segment.last() {
-                if result.last().map_or(true, |p| {
-                    (p.lon - last_point.lon).abs() > 1e-10 || (p.lat - last_point.lat).abs() > 1e-10
-                }) {
-                    result.push(last_point.clone());
-                }
+    
+    if let Some(last_segment) = segments.last() {
+        if let Some(last_point) = last_segment.last() {
+            if result.last().map_or(true, |p| {
+                (p.lon - last_point.lon).abs() > 1e-10 || (p.lat - last_point.lat).abs() > 1e-10
+            }) {
+                result.push(last_point.clone());
             }
         }
     }
 
     result
 }
+
 
 fn process_point_segment(
     lon1: f64,
@@ -78,6 +89,9 @@ fn process_point_segment(
 ) -> Vec<OffsetPoint> {
     let offset_deg = offset_meters / (EARTH_RADIUS * std::f64::consts::PI / 180.0);
 
+    
+    let mut result = Vec::with_capacity(2);
+    
     let avg_lat_rad = ((lat1 + lat2) / 2.0).to_radians();
     let lon_factor = avg_lat_rad.cos();
 
@@ -86,16 +100,19 @@ fn process_point_segment(
     let l = (dx * dx + dy * dy).sqrt();
 
     if l < 1e-10 {
-        return vec![
+        result.push(
             OffsetPoint {
                 lon: lon1,
                 lat: lat1,
-            },
+            }
+        );
+        result.push(
             OffsetPoint {
                 lon: lon2,
                 lat: lat2,
-            },
-        ];
+            }
+        );
+        return result;
     }
 
     let out1x = lon1 + (offset_deg * (lat2 - lat1)) / (l * lon_factor);
@@ -103,16 +120,20 @@ fn process_point_segment(
     let out2x = lon2 + (offset_deg * (lat2 - lat1)) / (l * lon_factor);
     let out2y = lat2 + (offset_deg * (lon1 - lon2)) / l;
 
-    vec![
+    result.push(
         OffsetPoint {
             lon: out1x,
             lat: out1y,
-        },
+        }
+    );
+    result.push(
         OffsetPoint {
             lon: out2x,
             lat: out2y,
-        },
-    ]
+        }
+    );
+    
+    result
 }
 
 fn find_intersection(

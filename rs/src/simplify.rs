@@ -7,51 +7,62 @@ pub struct SimplifiedPoint {
 
 impl Graph {
     pub fn simplify_shape(&self, nodes: &[i64], epsilon: f64) -> Vec<SimplifiedPoint> {
-        let node_data: Vec<_> = nodes.iter().filter_map(|&id| self.nodes.get(&id)).collect();
-
-        if node_data.len() <= 2 {
-            return node_data
-                .iter()
-                .map(|node| SimplifiedPoint {
-                    lon: node.lon,
-                    lat: node.lat,
-                })
-                .collect();
+        
+        let node_count = nodes.len();
+        let mut node_data = Vec::with_capacity(node_count);
+        
+        for &id in nodes {
+            if let Some(node) = self.nodes.get(&id) {
+                node_data.push((node.lon, node.lat));
+            }
         }
 
-        let points: Vec<(f64, f64)> = node_data.iter().map(|node| (node.lon, node.lat)).collect();
+        if node_data.len() <= 2 {
+            return node_data.into_iter()
+                   .map(|(lon, lat)| SimplifiedPoint { lon, lat })
+                   .collect();
+        }
 
-        let simplified = rdp_simplify(&points, epsilon);
+        
+        let simplified = rdp_simplify(&node_data, epsilon);
 
-        simplified
-            .iter()
-            .map(|&(lon, lat)| SimplifiedPoint { lon, lat })
-            .collect()
+        
+        let mut result = Vec::with_capacity(simplified.len());
+        for &(lon, lat) in &simplified {
+            result.push(SimplifiedPoint { lon, lat });
+        }
+
+        result
     }
 }
 
+
 fn rdp_simplify(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
-    if points.len() <= 2 {
+    let len = points.len();
+    
+    if len <= 2 {
         return points.to_vec();
     }
 
-    let mut result = Vec::new();
+    
+    let mut result = Vec::with_capacity(len / 2 + 2);
     let (index, distance) = find_furthest_point(points);
 
     if distance > epsilon {
-        let first_half = &points[0..=index];
-        let second_half = &points[index..];
+        
+        let mut simplified_first = rdp_simplify(&points[0..=index], epsilon);
+        let simplified_second = rdp_simplify(&points[index..], epsilon);
 
-        let mut simplified_first = rdp_simplify(first_half, epsilon);
-        let simplified_second = rdp_simplify(second_half, epsilon);
-
+        
         simplified_first.pop();
 
-        result.extend(simplified_first);
-        result.extend(simplified_second);
+        
+        result.reserve(simplified_first.len() + simplified_second.len());
+        result.append(&mut simplified_first);
+        result.extend_from_slice(&simplified_second);
     } else {
         result.push(points[0]);
-        result.push(points[points.len() - 1]);
+        result.push(points[len - 1]);
     }
 
     result
