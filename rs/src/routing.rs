@@ -3,7 +3,7 @@ use crate::graph::{Graph, Node, Profile};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
 use tokio::time::{timeout, Duration};
 
 thread_local! {
@@ -36,7 +36,6 @@ pub struct TurnRestrictionData {
     pub from_way: i64,
     pub via_node: i64,
     pub to_way: i64,
-    pub except: HashSet<String>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -76,7 +75,6 @@ pub struct RouteGraph {
     pub turn_restrictions: Vec<TurnRestrictionData>,
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, crate::graph::Way>,
-    pub vehicle_type: Option<String>,
     pub profile: Option<Profile>,
 }
 
@@ -517,49 +515,11 @@ fn is_turn_allowed(
 
     let prev_way_id = previous_way_id.unwrap();
 
-    let vehicle_type = graph.vehicle_type.as_deref();
-
     for restriction in &graph.turn_restrictions {
         if restriction.via_node == current_node_id
             && restriction.from_way == prev_way_id
             && restriction.to_way == next_way_id
         {
-            if !restriction.except.is_empty() && vehicle_type.is_some() {
-                let vtype = vehicle_type.unwrap();
-
-                let is_excepted = match vtype {
-                    "foot" => {
-                        restriction.except.contains("foot")
-                            || restriction.except.contains("pedestrian")
-                    }
-                    "bicycle" => restriction.except.contains("bicycle"),
-                    "motorcar" => {
-                        restriction.except.contains("motorcar")
-                            || restriction.except.contains("car")
-                            || restriction.except.contains("motor_vehicle")
-                    }
-                    "motorcycle" => {
-                        restriction.except.contains("motorcycle")
-                            || restriction.except.contains("motor_vehicle")
-                    }
-                    "psv" => {
-                        restriction.except.contains("psv")
-                            || restriction.except.contains("bus")
-                            || restriction.except.contains("minibus")
-                            || restriction.except.contains("tourist_bus")
-                            || restriction.except.contains("coach")
-                    }
-                    "train" => restriction.except.contains("train"),
-                    "subway" => restriction.except.contains("subway"),
-                    "tram" => restriction.except.contains("tram"),
-                    _ => false,
-                };
-
-                if is_excepted {
-                    return true;
-                }
-            }
-
             if restriction.restriction_type == TurnRestriction::Prohibitory {
                 return false;
             }
@@ -570,39 +530,9 @@ fn is_turn_allowed(
         .turn_restrictions
         .iter()
         .filter(|r| {
-            let applies_to_vehicle = if vehicle_type.is_some() && !r.except.is_empty() {
-                let vtype = vehicle_type.unwrap();
-                match vtype {
-                    "foot" => !r.except.contains("foot") && !r.except.contains("pedestrian"),
-                    "bicycle" => !r.except.contains("bicycle"),
-                    "motorcar" => {
-                        !r.except.contains("motorcar")
-                            && !r.except.contains("car")
-                            && !r.except.contains("motor_vehicle")
-                    }
-                    "motorcycle" => {
-                        !r.except.contains("motorcycle") && !r.except.contains("motor_vehicle")
-                    }
-                    "psv" => {
-                        !r.except.contains("psv")
-                            && !r.except.contains("bus")
-                            && !r.except.contains("minibus")
-                            && !r.except.contains("tourist_bus")
-                            && !r.except.contains("coach")
-                    }
-                    "train" => !r.except.contains("train"),
-                    "subway" => !r.except.contains("subway"),
-                    "tram" => !r.except.contains("tram"),
-                    _ => true,
-                }
-            } else {
-                true
-            };
-
             r.via_node == current_node_id
                 && r.from_way == prev_way_id
                 && r.restriction_type == TurnRestriction::Mandatory
-                && applies_to_vehicle
         })
         .collect();
 

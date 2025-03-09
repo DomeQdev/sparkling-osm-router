@@ -53,11 +53,6 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         turn_restrictions = tr.clone();
     });
 
-    let vehicle_type = graph
-        .profile
-        .as_ref()
-        .and_then(|profile| profile.vehicle_type.clone());
-
     for way in graph.ways.values() {
         let is_roundabout = way
             .tags
@@ -162,18 +157,11 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
                         }
 
                         if let (Some(from), Some(via), Some(to)) = (from_way, via_node, to_way) {
-                            let except = relation
-                                .tags
-                                .get("except")
-                                .map(|e| e.split(';').map(String::from).collect())
-                                .unwrap_or_else(HashSet::new);
-
                             turn_restrictions.push(TurnRestrictionData {
                                 restriction_type,
                                 from_way: from,
                                 via_node: via,
                                 to_way: to,
-                                except,
                             });
                         }
                     }
@@ -187,103 +175,44 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         turn_restrictions,
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
         ways_map: FxHashMap::from_iter(graph.ways.clone()),
-        vehicle_type,
         profile: graph.profile.clone(),
     }
 }
 
 fn filter_graph(graph: &mut Graph) {
     let profile = graph.profile.clone().expect("Profile must be set");
+    let vehicle_type = profile.vehicle_type.clone();
 
     graph.ways.retain(|_, way| {
-        let has_profile_key = way.tags.contains_key(&profile.key);
-
-        if profile.vehicle_type.is_none() {
-            return has_profile_key;
+        if !way.tags.contains_key(&profile.key) {
+            return false;
         }
 
-        let vehicle_type = profile.vehicle_type.as_ref().unwrap();
-
-        let access_value = way.tags.get("access");
-
-        if access_value.map_or(false, |v| v == "no") {
-            match vehicle_type.as_str() {
-                "foot" => way
-                    .tags
-                    .get("foot")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "bicycle" => way
-                    .tags
-                    .get("bicycle")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "motorcar" => way
-                    .tags
-                    .get("motorcar")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "motorcycle" => way
-                    .tags
-                    .get("motorcycle")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "psv" => {
-                    way.tags
-                        .get("psv")
-                        .map_or(false, |v| v == "yes" || v == "designated")
-                        || way
-                            .tags
-                            .get("bus")
-                            .map_or(false, |v| v == "yes" || v == "designated")
-                        || way
-                            .tags
-                            .get("minibus")
-                            .map_or(false, |v| v == "yes" || v == "designated")
-                        || way
-                            .tags
-                            .get("tourist_bus")
-                            .map_or(false, |v| v == "yes" || v == "designated")
-                        || way
-                            .tags
-                            .get("coach")
-                            .map_or(false, |v| v == "yes" || v == "designated")
-                }
-                "train" => way
-                    .tags
-                    .get("train")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "subway" => way
-                    .tags
-                    .get("subway")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                "tram" => way
-                    .tags
-                    .get("tram")
-                    .map_or(false, |v| v == "yes" || v == "designated"),
-                _ => false,
-            }
-        } else {
-            let vehicle_access = match vehicle_type.as_str() {
-                "foot" => way.tags.get("foot"),
-                "bicycle" => way.tags.get("bicycle"),
-                "motorcar" => way.tags.get("motorcar"),
-                "motorcycle" => way.tags.get("motorcycle"),
-                "psv" => way
-                    .tags
-                    .get("psv")
-                    .or(way.tags.get("bus"))
-                    .or(way.tags.get("minibus"))
-                    .or(way.tags.get("tourist_bus"))
-                    .or(way.tags.get("coach")),
-                "train" => way.tags.get("train"),
-                "subway" => way.tags.get("subway"),
-                "tram" => way.tags.get("tram"),
-                _ => None,
-            };
-
-            if vehicle_access.map_or(false, |v| v == "no" || v == "permissive" || v == "private") {
-                return false;
-            }
-
-            has_profile_key
+        if vehicle_type.is_none() {
+            return true;
         }
+
+        let vehicle = vehicle_type.as_ref().unwrap();
+
+        let has_access = match vehicle.as_str() {
+            "foot" => check_access_for_vehicle(way, "foot", &["footway", "pedestrian", "path"]),
+            "bicycle" => check_access_for_vehicle(way, "bicycle", &["cycleway"]),
+            "motorcar" => check_access_for_vehicle(way, "motorcar", &["motorway", "motorroad"]),
+            "motorcycle" => check_access_for_vehicle(way, "motorcycle", &["motorway", "motorroad"]),
+            "psv" => {
+                check_access_for_vehicle(way, "psv", &[])
+                    || check_access_for_vehicle(way, "bus", &["busway"])
+                    || check_access_for_vehicle(way, "minibus", &[])
+                    || check_access_for_vehicle(way, "tourist_bus", &[])
+                    || check_access_for_vehicle(way, "coach", &[])
+            }
+            "train" => check_access_for_vehicle(way, "train", &["rail"]),
+            "subway" => check_access_for_vehicle(way, "subway", &["subway"]),
+            "tram" => check_access_for_vehicle(way, "tram", &["tram"]),
+            _ => true,
+        };
+
+        has_access
     });
 
     let used_node_ids: HashSet<i64> = graph
@@ -296,12 +225,94 @@ fn filter_graph(graph: &mut Graph) {
         .nodes
         .retain(|node_id, _| used_node_ids.contains(node_id));
 
-    graph.relations.retain(|_, relation| {
-        relation
-            .tags
-            .get("type")
-            .map_or(false, |type_tag| type_tag == "restriction")
-    });
+    if let Some(vehicle_type) = &graph.profile.as_ref().and_then(|p| p.vehicle_type.clone()) {
+        let vehicle = vehicle_type.as_str();
+
+        graph.relations.retain(|_, relation| {
+            if let Some(relation_type) = relation.tags.get("type") {
+                if relation_type == "restriction" {
+                    if let Some(except_tag) = relation.tags.get("except") {
+                        let exceptions: HashSet<&str> =
+                            except_tag.split(';').map(|s| s.trim()).collect();
+
+                        match vehicle {
+                            "foot" => {
+                                !exceptions.contains("foot") && !exceptions.contains("pedestrian")
+                            }
+                            "bicycle" => !exceptions.contains("bicycle"),
+                            "motorcar" => {
+                                !exceptions.contains("motorcar")
+                                    && !exceptions.contains("car")
+                                    && !exceptions.contains("motor_vehicle")
+                            }
+                            "motorcycle" => {
+                                !exceptions.contains("motorcycle")
+                                    && !exceptions.contains("motor_vehicle")
+                            }
+                            "psv" => {
+                                !exceptions.contains("psv")
+                                    && !exceptions.contains("bus")
+                                    && !exceptions.contains("minibus")
+                                    && !exceptions.contains("tourist_bus")
+                                    && !exceptions.contains("coach")
+                            }
+                            "train" => !exceptions.contains("train"),
+                            "subway" => !exceptions.contains("subway"),
+                            "tram" => !exceptions.contains("tram"),
+                            _ => true,
+                        }
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        });
+    } else {
+        graph.relations.retain(|_, relation| {
+            relation
+                .tags
+                .get("type")
+                .map_or(false, |type_tag| type_tag == "restriction")
+        });
+    }
+}
+
+fn check_access_for_vehicle(
+    way: &crate::graph::Way,
+    vehicle_tag: &str,
+    highway_values: &[&str],
+) -> bool {
+    let general_access = way
+        .tags
+        .get("access")
+        .map_or(true, |v| v != "no" && v != "private");
+
+    let dedicated_highway = if !highway_values.is_empty() {
+        way.tags
+            .get("highway")
+            .map_or(false, |h| highway_values.contains(&h.as_str()))
+    } else {
+        false
+    };
+
+    if dedicated_highway {
+        return true;
+    }
+
+    if let Some(vehicle_value) = way.tags.get(vehicle_tag) {
+        if vehicle_value == "yes" || vehicle_value == "designated" {
+            return true;
+        }
+        if vehicle_value == "no" {
+            return false;
+        }
+    }
+
+    general_access
 }
 
 fn process_turn_restrictions(graph: &mut Graph) {
@@ -380,7 +391,6 @@ fn process_single_restriction(
                         from_way: from_id,
                         via_node: via_id,
                         to_way: to_id,
-                        except,
                     });
                 });
 
