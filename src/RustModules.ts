@@ -20,12 +20,16 @@ export const createGraphStore: () => number = binding.createGraphStore;
 export const loadAndIndexGraph: (path: string, graphId: number, profile: string) => boolean =
     binding.loadAndIndexGraph;
 
-export const findNearestNode: (lon: number, lat: number, graphId: number) => number | -1 =
-    binding.findNearestNode;
+export const findNearestNode: (
+    lon: number, 
+    lat: number, 
+    graphId: number,
+    limit?: number
+) => number[] = binding.findNearestNode;
 
 export const route: (
-    startNode: number,
-    endNode: number,
+    startNodes: number[],
+    endNodes: number[],
     initialBearing: number | null,
     graphId: number
 ) => Promise<RouteResult> = binding.route;

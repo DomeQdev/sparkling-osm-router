@@ -44,11 +44,11 @@ const carGraph = new Graph({
 await carGraph.loadGraph();
 
 // Find nearest nodes to the provided coordinates
-const startNode = carGraph.getNearestNode([20.924942, 52.272449]);
-const endNode = carGraph.getNearestNode([21.046434, 52.265235]);
+const startNodes = carGraph.getNearestNode([20.924942, 52.272449], 3); // Get up to 3 nearest nodes
+const endNodes = carGraph.getNearestNode([21.046434, 52.265235], 3);   // Get up to 3 nearest nodes
 
-// Calculate the route
-const route = await carGraph.getRoute(startNode, endNode);
+// Calculate the route - will find the best route among all combinations
+const route = await carGraph.getRoute(startNodes, endNodes);
 
 // Get the route shape for visualization
 const routeShape = carGraph.getShape(route);
@@ -139,19 +139,20 @@ Creates a new graph instance with the provided options.
 
 Loads graph data. Should be called before using other methods.
 
-#### getNearestNode(coordinates: [lon, lat], usePenalties: boolean = true): number
+#### getNearestNode(coordinates: [lon, lat], limit: number = 1): number[]
 
-Returns the ID of the nearest node to the provided coordinates.
+Returns an array of IDs of the nearest nodes to the provided coordinates.
 
 -   `coordinates` - array [longitude, latitude]
+-   `limit` - maximum number of nodes to return (default: 1)
 -   `usePenalties` - whether to consider profile penalties (default: true)
 
-#### getRoute(startNode: number, endNode: number, bearing?: number): Promise<RouteResult>
+#### getRoute(startNodes: number[], endNodes: number[], bearing?: number): Promise<RouteResult>
 
-Calculates a route between two nodes.
+Calculates the best route between sets of nodes.
 
--   `startNode` - start node ID
--   `endNode` - end node ID
+-   `startNodes` - array of start node IDs
+-   `endNodes` - array of end node IDs
 -   `bearing` - optional initial direction in degrees
 
 #### getShape(route: RouteResult): Location[]
@@ -258,6 +259,19 @@ const simplifiedShape = carGraph.getSimplifiedShape(route, 0.0001);
 
 // Użyj offsetu dla uproszczonego kształtu
 const offsetShape = carGraph.offsetShape(simplifiedShape, 2.0, 1);
+```
+
+### Handling Complex Interchanges and Bridges
+
+When routing near complex road infrastructure like bridges or multi-level interchanges, it's useful to consider multiple nearest nodes:
+
+```typescript
+// For complex areas, get multiple candidate nodes
+const startNodes = carGraph.getNearestNode([20.924942, 52.272449], 5);
+const endNodes = carGraph.getNearestNode([21.046434, 52.265235], 5);
+
+// The router will calculate all possible combinations and return the best route
+const route = await carGraph.getRoute(startNodes, endNodes);
 ```
 
 ## Advanced Usage

@@ -188,6 +188,12 @@ fn filter_graph(graph: &mut Graph) {
             return false;
         }
 
+        if way.tags.get("highway").map_or(false, |h| h == "service")
+            && way.tags.contains_key("service")
+        {
+            return false;
+        }
+
         if vehicle_type.is_none() {
             return true;
         }
@@ -195,20 +201,32 @@ fn filter_graph(graph: &mut Graph) {
         let vehicle = vehicle_type.as_ref().unwrap();
 
         let has_access = match vehicle.as_str() {
-            "foot" => check_access_for_vehicle(way, "foot", &["footway", "pedestrian", "path"]),
-            "bicycle" => check_access_for_vehicle(way, "bicycle", &["cycleway"]),
-            "motorcar" => check_access_for_vehicle(way, "motorcar", &["motorway", "motorroad"]),
-            "motorcycle" => check_access_for_vehicle(way, "motorcycle", &["motorway", "motorroad"]),
-            "psv" => {
-                check_access_for_vehicle(way, "psv", &[])
-                    || check_access_for_vehicle(way, "bus", &["busway"])
-                    || check_access_for_vehicle(way, "minibus", &[])
-                    || check_access_for_vehicle(way, "tourist_bus", &[])
-                    || check_access_for_vehicle(way, "coach", &[])
+            "foot" => {
+                check_access_for_vehicle(way, "foot", &["footway", "pedestrian", "path"], &[])
             }
-            "train" => check_access_for_vehicle(way, "train", &["rail"]),
-            "subway" => check_access_for_vehicle(way, "subway", &["subway"]),
-            "tram" => check_access_for_vehicle(way, "tram", &["tram"]),
+            "bicycle" => check_access_for_vehicle(way, "bicycle", &["cycleway"], &[]),
+            "motorcar" => check_access_for_vehicle(
+                way,
+                "motorcar",
+                &["motorway", "motorroad"],
+                &["car", "vehicle", "motor_vehicle"],
+            ),
+            "motorcycle" => check_access_for_vehicle(
+                way,
+                "motorcycle",
+                &["motorway", "motorroad"],
+                &["vehicle", "motor_vehicle"],
+            ),
+            "psv" => {
+                check_access_for_vehicle(way, "psv", &[], &[])
+                    || check_access_for_vehicle(way, "bus", &["busway"], &[])
+                    || check_access_for_vehicle(way, "minibus", &[], &[])
+                    || check_access_for_vehicle(way, "tourist_bus", &[], &[])
+                    || check_access_for_vehicle(way, "coach", &[], &[])
+            }
+            "train" => check_access_for_vehicle(way, "train", &["rail"], &[]),
+            "subway" => check_access_for_vehicle(way, "subway", &["subway"], &[]),
+            "tram" => check_access_for_vehicle(way, "tram", &["tram"], &[]),
             _ => true,
         };
 
@@ -285,6 +303,7 @@ fn check_access_for_vehicle(
     way: &crate::graph::Way,
     vehicle_tag: &str,
     highway_values: &[&str],
+    additional_tags: &[&str],
 ) -> bool {
     let general_access = way
         .tags
@@ -308,6 +327,12 @@ fn check_access_for_vehicle(
             return true;
         }
         if vehicle_value == "no" {
+            return false;
+        }
+    }
+
+    for tag in additional_tags {
+        if way.tags.get(*tag).map_or(false, |v| v == "no") {
             return false;
         }
     }

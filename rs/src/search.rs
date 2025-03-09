@@ -4,47 +4,62 @@ use crate::indexer::RESTRICTED_NODES;
 use std::collections::HashMap;
 
 impl Graph {
-    pub fn find_nearest_way_and_node(&self, lon: f64, lat: f64) -> Result<Option<(i64, i64)>> {
+    pub fn find_nearest_ways_and_nodes(
+        &self,
+        lon: f64,
+        lat: f64,
+        limit: usize,
+    ) -> Result<Vec<i64>> {
         let query_point: [f64; 2] = [lon, lat];
+        let actual_limit = limit.max(1);
 
         let mut candidate_ways = Vec::new();
         for way_envelope in self.way_rtree.nearest_neighbor_iter(&query_point).take(100) {
             candidate_ways.push(way_envelope.way_id);
         }
 
-        let mut best_way_id = None;
-        let mut best_node_id = None;
-        let mut min_distance = f64::MAX;
+        let mut candidates = Vec::new();
 
         for way_id in candidate_ways {
             if let Some((node_id, distance)) =
                 find_nearest_point_on_way(&self.ways, &self.nodes, way_id, query_point)
             {
-                if distance < min_distance && !has_mandatory_restriction_conflicts_indexed(node_id)
-                {
-                    min_distance = distance;
-                    best_way_id = Some(way_id);
-                    best_node_id = Some(node_id);
+                if !has_mandatory_restriction_conflicts_indexed(node_id) {
+                    candidates.push((node_id, distance, way_id));
                     continue;
                 }
 
-                if distance < min_distance {
-                    if let Some(alternative_node_id) =
-                        find_alternative_node_on_way_indexed(&self.ways, way_id, node_id)
-                    {
-                        min_distance = distance;
-                        best_way_id = Some(way_id);
-                        best_node_id = Some(alternative_node_id);
-                    }
+                if let Some(alternative_node_id) =
+                    find_alternative_node_on_way_indexed(&self.ways, way_id, node_id)
+                {
+                    candidates.push((alternative_node_id, distance, way_id));
                 }
             }
         }
 
-        if let (Some(way_id), Some(node_id)) = (best_way_id, best_node_id) {
-            return Ok(Some((way_id, node_id)));
-        }
+        
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        Ok(None)
+        
+        if candidates.len() > 1 && actual_limit > 1 {
+            
+            let closest_node_distance = candidates[0].1;
+            
+            
+            let distance_threshold = closest_node_distance * 3.0;
+            
+            
+            candidates.retain(|(_, distance, _)| *distance <= distance_threshold);
+        }
+        
+        
+        let result = candidates
+            .into_iter()
+            .take(actual_limit)
+            .map(|(node_id, _, _)| node_id)
+            .collect();
+
+        Ok(result)
     }
 }
 

@@ -78,10 +78,15 @@ fn load_and_index_graph_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     }
 }
 
-fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
+fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     let lon = cx.argument::<JsNumber>(0)?.value(&mut cx);
     let lat = cx.argument::<JsNumber>(1)?.value(&mut cx);
     let graph_id = cx.argument::<JsNumber>(2)?.value(&mut cx) as i32;
+    let limit = if cx.len() > 3 {
+        cx.argument::<JsNumber>(3)?.value(&mut cx) as usize
+    } else {
+        1
+    };
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(graph) => graph.clone(),
@@ -91,18 +96,42 @@ fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let nearest_result = graph_store
         .read()
         .unwrap()
-        .find_nearest_way_and_node(lon, lat);
+        .find_nearest_ways_and_nodes(lon, lat, limit);
 
     match nearest_result {
-        Ok(Some((_way_id, node_id))) => Ok(cx.number(node_id as f64)),
-        Ok(None) => Ok(cx.number(-1.0)),
-        Err(e) => cx.throw_error(&format!("Error finding nearest way and node: {}", e)),
+        Ok(node_ids) => {
+            let result = JsArray::new(&mut cx, node_ids.len());
+
+            for (i, node_id) in node_ids.iter().enumerate() {
+                let js_value = cx.number(*node_id as f64);
+                result.set(&mut cx, i as u32, js_value)?;
+            }
+
+            Ok(result)
+        }
+        Err(e) => cx.throw_error(&format!("Error finding nearest ways and nodes: {}", e)),
     }
 }
 
 fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let start_node_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i64;
-    let end_node_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i64;
+    let start_nodes_arg = cx.argument::<JsArray>(0)?;
+    let mut start_nodes = Vec::with_capacity(start_nodes_arg.len(&mut cx) as usize);
+    for i in 0..start_nodes_arg.len(&mut cx) {
+        let node_id = start_nodes_arg
+            .get::<JsNumber, _, u32>(&mut cx, i)?
+            .value(&mut cx) as i64;
+        start_nodes.push(node_id);
+    }
+
+    let end_nodes_arg = cx.argument::<JsArray>(1)?;
+    let mut end_nodes = Vec::with_capacity(end_nodes_arg.len(&mut cx) as usize);
+    for i in 0..end_nodes_arg.len(&mut cx) {
+        let node_id = end_nodes_arg
+            .get::<JsNumber, _, u32>(&mut cx, i)?
+            .value(&mut cx) as i64;
+        end_nodes.push(node_id);
+    }
+
     let initial_bearing = {
         let bearing_arg = cx.argument::<JsValue>(2)?;
         if bearing_arg.is_a::<JsNull, _>(&mut cx) {
@@ -131,7 +160,7 @@ fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
             graph_store
                 .read()
                 .unwrap()
-                .route(start_node_id, end_node_id, initial_bearing)
+                .route_multiple_nodes(&start_nodes, &end_nodes, initial_bearing)
                 .await
         });
 

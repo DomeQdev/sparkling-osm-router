@@ -128,31 +128,32 @@ class Graph {
     };
 
     /**
-     * Calculates a route between two nodes.
-     * @param startNode - The ID of the starting node
-     * @param endNode - The ID of the ending node
+     * Calculates a route between sets of nodes.
+     * @param startNodes - Array of IDs of possible starting nodes
+     * @param endNodes - Array of IDs of possible ending nodes
      * @param bearing - Optional bearing direction in degrees
      * @returns The calculated route result
      * @throws If the graph is not loaded
      */
-    getRoute = async (startNode: number, endNode: number, bearing?: number): Promise<RouteResult> => {
+    getRoute = async (startNodes: number[], endNodes: number[], bearing?: number): Promise<RouteResult> => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
-        return route(startNode, endNode, bearing ?? null, this.graph);
+        return route(startNodes, endNodes, bearing ?? null, this.graph);
     };
 
     /**
-     * Finds the nearest node to given coordinates.
+     * Finds the nearest nodes to given coordinates.
      * @param location - Longitude and latitude coordinates
-     * @returns The ID of the nearest node
+     * @param limit - Maximum number of nodes to return (default: 1)
+     * @returns Array of IDs of the nearest nodes
      * @throws If the graph is not loaded
      */
-    getNearestNode = (location: Location) => {
+    getNearestNode = (location: Location, limit: number = 1) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
-        return findNearestNode(lon, lat, this.graph);
+        return findNearestNode(lon, lat, this.graph, limit);
     };
 
     /**
