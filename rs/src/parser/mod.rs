@@ -1,9 +1,9 @@
-use crate::errors::{GraphError, Result};
-use crate::graph::{Graph, Node, Relation, RelationMember, Way};
-use crate::utils::parse_attribute;
+use crate::core::errors::{GraphError, Result};
+use crate::core::types::{Graph, Node, Relation, RelationMember, Way};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+use xml::attribute::OwnedAttribute;
 use xml::reader::{EventReader, XmlEvent};
 
 pub fn parse_osm_xml(file_path: &str) -> Result<Graph> {
@@ -158,4 +158,19 @@ pub fn parse_osm_xml(file_path: &str) -> Result<Graph> {
     }
 
     Ok(graph)
+}
+
+fn parse_attribute<T: std::str::FromStr>(
+    attributes: &[OwnedAttribute],
+    attribute_name: &str,
+    error_message: &str,
+) -> Result<T>
+where
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
+    attributes
+        .iter()
+        .find(|attr| attr.name.local_name == attribute_name)
+        .and_then(|attr| attr.value.parse::<T>().ok())
+        .ok_or_else(|| GraphError::InvalidOsmData(error_message.to_string()))
 }

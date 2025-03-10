@@ -1,42 +1,10 @@
-use crate::errors::{GraphError, Result};
-use crate::graph::{Graph, Node, Profile};
+use crate::core::errors::{GraphError, Result};
+use crate::core::types::Node;
+use crate::routing::{RouteGraph, RouteResult, TurnRestriction, TurnRestrictionData};
+use crate::spatial::geometry::{bearing_difference, calculate_bearing, haversine_distance};
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use tokio::time::{timeout, Duration};
-
-thread_local! {
-    static TURN_RESTRICTIONS: RefCell<Vec<TurnRestrictionData>> = RefCell::new(Vec::new());
-}
-
-pub fn thread_local_turn_restrictions_mut<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut Vec<TurnRestrictionData>) -> R,
-{
-    TURN_RESTRICTIONS.with(|tr| f(&mut tr.borrow_mut()))
-}
-
-#[derive(Clone, Debug)]
-pub struct RouteResult {
-    pub nodes: Vec<i64>,
-    pub ways: Vec<i64>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TurnRestriction {
-    Inapplicable,
-    Prohibitory,
-    Mandatory,
-}
-
-#[derive(Clone, Debug)]
-pub struct TurnRestrictionData {
-    pub restriction_type: TurnRestriction,
-    pub from_way: i64,
-    pub via_node: i64,
-    pub to_way: i64,
-}
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct NodeWithPrevious {
@@ -62,123 +30,6 @@ impl PartialOrd for NodeWithPrevious {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct RouteEdge {
-    pub to_node: i64,
-    pub way_id: i64,
-    pub cost: i64,
-}
-
-#[derive(Clone, Debug)]
-pub struct RouteGraph {
-    pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
-    pub turn_restrictions: Vec<TurnRestrictionData>,
-    pub nodes_map: FxHashMap<i64, Node>,
-    pub ways_map: FxHashMap<i64, crate::graph::Way>,
-    pub profile: Option<Profile>,
-}
-
-impl Graph {
-    pub async fn route_multiple_nodes(
-        &self,
-        start_nodes: &[i64],
-        end_nodes: &[i64],
-        initial_bearing: Option<f64>,
-    ) -> Result<Option<RouteResult>> {
-        if start_nodes.is_empty() || end_nodes.is_empty() {
-            return Ok(None);
-        }
-
-        let mut best_route: Option<RouteResult> = None;
-        let mut shortest_distance = f64::MAX;
-
-        for &start_node_id in start_nodes {
-            for &end_node_id in end_nodes {
-                if let Ok(Some(route)) = self
-                    .route(start_node_id, end_node_id, initial_bearing)
-                    .await
-                {
-                    let total_distance = self.calculate_route_distance(&route.nodes);
-
-                    if total_distance < shortest_distance {
-                        shortest_distance = total_distance;
-                        best_route = Some(route);
-                    }
-                }
-            }
-        }
-
-        Ok(best_route)
-    }
-
-    fn calculate_route_distance(&self, node_ids: &[i64]) -> f64 {
-        let mut total_distance = 0.0;
-
-        for i in 0..node_ids.len().saturating_sub(1) {
-            if let (Some(node1), Some(node2)) = (
-                self.nodes.get(&node_ids[i]),
-                self.nodes.get(&node_ids[i + 1]),
-            ) {
-                total_distance += haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon);
-            }
-        }
-
-        total_distance
-    }
-
-    pub async fn route(
-        &self,
-        start_node_id: i64,
-        end_node_id: i64,
-        initial_bearing: Option<f64>,
-    ) -> Result<Option<RouteResult>> {
-        let routing_graph = match &self.route_graph {
-            Some(graph) => graph.clone(),
-            None => {
-                return Err(GraphError::InvalidOsmData(
-                    "Routing graph not built".to_string(),
-                ))
-            }
-        };
-
-        let start_node = self.nodes.get(&start_node_id).ok_or_else(|| {
-            GraphError::InvalidOsmData(format!("Start node {} not found", start_node_id))
-        })?;
-        let end_node = self.nodes.get(&end_node_id).ok_or_else(|| {
-            GraphError::InvalidOsmData(format!("End node {} not found", end_node_id))
-        })?;
-
-        let direct_distance =
-            haversine_distance(start_node.lat, start_node.lon, end_node.lat, end_node.lon);
-
-        let timeout_duration = if direct_distance < 20.0 {
-            Duration::from_secs(60)
-        } else if direct_distance < 100.0 {
-            Duration::from_secs(300)
-        } else if direct_distance < 500.0 {
-            Duration::from_secs(1200)
-        } else {
-            Duration::from_secs(1800)
-        };
-
-        let route_future = tokio::task::spawn_blocking(move || {
-            find_route_astar(&routing_graph, start_node_id, end_node_id, initial_bearing)
-        });
-
-        match timeout(timeout_duration, route_future).await {
-            Ok(result) => match result {
-                Ok(route_result) => route_result,
-                Err(_) => Err(GraphError::InvalidOsmData(
-                    "Task panicked during routing".to_string(),
-                )),
-            },
-            Err(_) => Err(GraphError::InvalidOsmData(
-                "Routing operation timed out".to_string(),
-            )),
-        }
-    }
-}
-
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct VisitKey {
     node_id: i64,
@@ -196,7 +47,7 @@ impl VisitKey {
     }
 }
 
-fn find_route_astar(
+pub fn find_route_astar(
     graph: &RouteGraph,
     start_node_id: i64,
     end_node_id: i64,
@@ -342,7 +193,7 @@ fn estimate_distance(node1: &Node, node2: &Node) -> f64 {
 
 fn process_edges(
     graph: &RouteGraph,
-    edges: &[RouteEdge],
+    edges: &[crate::routing::RouteEdge],
     current: NodeWithPrevious,
     end_node: &Node,
     open_set: &mut BinaryHeap<NodeWithPrevious>,
@@ -388,7 +239,7 @@ fn process_edges(
 
 fn process_edges_with_bearing(
     graph: &RouteGraph,
-    edges: &[RouteEdge],
+    edges: &[crate::routing::RouteEdge],
     current: NodeWithPrevious,
     desired_bearing: f64,
     end_node: &Node,
@@ -422,7 +273,7 @@ fn process_edges_with_bearing(
         .filter(|(_, score)| *score > 0)
         .collect();
 
-    let edges_to_process: Vec<&(&RouteEdge, i64)> = if !good_edges.is_empty() {
+    let edges_to_process: Vec<&(&crate::routing::RouteEdge, i64)> = if !good_edges.is_empty() {
         if good_edges.len() > 3 {
             good_edges[0..3].to_vec()
         } else {
@@ -473,7 +324,7 @@ fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
     return (distance * 1000.0 * heuristic_factor) as i64;
 }
 
-fn calculate_edge_cost(graph: &RouteGraph, edge: &RouteEdge) -> i64 {
+fn calculate_edge_cost(graph: &RouteGraph, edge: &crate::routing::RouteEdge) -> i64 {
     let base_cost = edge.cost;
 
     if graph.profile.is_none() || !graph.ways_map.contains_key(&edge.way_id) {
@@ -534,55 +385,6 @@ fn reconstruct_path_with_ways(
     }
 
     (path_nodes, deduped_ways)
-}
-
-pub fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6371.0;
-    let lat1_rad = lat1.to_radians();
-    let lon1_rad = lon1.to_radians();
-    let lat2_rad = lat2.to_radians();
-    let lon2_rad = lon2.to_radians();
-
-    let dlat = lat2_rad - lat1_rad;
-    let dlon = lon2_rad - lon1_rad;
-
-    let a =
-        (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
-
-    r * c
-}
-
-fn calculate_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let lat1_rad = lat1.to_radians();
-    let lon1_rad = lon1.to_radians();
-    let lat2_rad = lat2.to_radians();
-    let lon2_rad = lon2.to_radians();
-
-    let dlon = lon2_rad - lon1_rad;
-
-    let y = dlon.sin() * lat2_rad.cos();
-    let x = lat1_rad.cos() * lat2_rad.sin() - lat1_rad.sin() * lat2_rad.cos() * dlon.cos();
-
-    let bearing_rad = y.atan2(x);
-    let mut bearing_deg = bearing_rad.to_degrees();
-
-    if bearing_deg < 0.0 {
-        bearing_deg += 360.0;
-    }
-
-    bearing_deg
-}
-
-fn bearing_difference(bearing1: f64, bearing2: f64) -> f64 {
-    let mut diff = bearing2 - bearing1;
-    while diff > 180.0 {
-        diff -= 360.0;
-    }
-    while diff < -180.0 {
-        diff += 360.0;
-    }
-    diff
 }
 
 fn is_turn_allowed(

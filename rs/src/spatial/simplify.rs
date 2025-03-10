@@ -1,5 +1,6 @@
-use crate::graph::Graph;
+use crate::core::types::Graph;
 
+#[derive(Clone, Debug)]
 pub struct SimplifiedPoint {
     pub lon: f64,
     pub lat: f64,
@@ -7,7 +8,6 @@ pub struct SimplifiedPoint {
 
 impl Graph {
     pub fn simplify_shape(&self, nodes: &[i64], epsilon: f64) -> Vec<SimplifiedPoint> {
-        
         let node_count = nodes.len();
         let mut node_data = Vec::with_capacity(node_count);
         
@@ -23,10 +23,8 @@ impl Graph {
                    .collect();
         }
 
-        
         let simplified = rdp_simplify(&node_data, epsilon);
 
-        
         let mut result = Vec::with_capacity(simplified.len());
         for &(lon, lat) in &simplified {
             result.push(SimplifiedPoint { lon, lat });
@@ -36,7 +34,6 @@ impl Graph {
     }
 }
 
-
 fn rdp_simplify(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
     let len = points.len();
     
@@ -44,19 +41,15 @@ fn rdp_simplify(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
         return points.to_vec();
     }
 
-    
     let mut result = Vec::with_capacity(len / 2 + 2);
     let (index, distance) = find_furthest_point(points);
 
     if distance > epsilon {
-        
         let mut simplified_first = rdp_simplify(&points[0..=index], epsilon);
         let simplified_second = rdp_simplify(&points[index..], epsilon);
 
-        
         simplified_first.pop();
 
-        
         result.reserve(simplified_first.len() + simplified_second.len());
         result.append(&mut simplified_first);
         result.extend_from_slice(&simplified_second);

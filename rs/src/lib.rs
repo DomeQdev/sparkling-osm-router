@@ -1,8 +1,16 @@
-use crate::graph::Graph;
-use crate::indexer::index_graph;
-use crate::indexer::GRAPH_NODES;
-use crate::parser::parse_osm_xml;
+mod core;
+mod graph;
+mod parser;
+mod routing;
+mod spatial;
+
+use core::types::{Graph, Profile};
+use graph::SharedGraph;
 use neon::prelude::*;
+use parser::parse_osm_xml;
+use routing::{init_routing_thread_pool, ROUTING_THREAD_POOL};
+use spatial::indexer::{index_graph, GRAPH_NODES};
+use spatial::offset::offset_points;
 
 use lazy_static::lazy_static;
 use rayon;
@@ -10,28 +18,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
 
-mod errors;
-mod graph;
-mod indexer;
-mod offset;
-mod parser;
-mod routing;
-mod search;
-mod simplify;
-mod utils;
-
-type SharedGraph = Arc<RwLock<Graph>>;
-
 lazy_static! {
     static ref TOKIO_RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
     static ref GRAPH_STORAGE: Mutex<HashMap<i32, SharedGraph>> = Mutex::new(HashMap::new());
-    static ref ROUTING_THREAD_POOL: rayon::ThreadPool = {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .thread_name(|i| format!("routing-worker-{}", i))
-            .build()
-            .expect("Failed to create routing thread pool")
-    };
 }
 
 static mut NEXT_GRAPH_ID: i32 = 1;
@@ -54,7 +43,7 @@ fn load_and_index_graph_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
         }
     };
 
-    match serde_json::from_str::<graph::Profile>(&profile_json) {
+    match serde_json::from_str::<Profile>(&profile_json) {
         Ok(profile) => {
             parsed_graph.set_profile(profile);
         }
@@ -155,7 +144,9 @@ fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
-    ROUTING_THREAD_POOL.spawn(move || {
+    init_routing_thread_pool();
+
+    ROUTING_THREAD_POOL.get().unwrap().spawn(move || {
         let async_result = TOKIO_RUNTIME.block_on(async {
             graph_store
                 .read()
@@ -384,10 +375,10 @@ fn offset_points_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
         points.push((lon, lat));
     }
 
-    let offset_points = offset::offset_points(&points, offset_meters, offset_side);
+    let offset_points_result = offset_points(&points, offset_meters, offset_side);
 
-    let result = JsArray::new(&mut cx, offset_points.len());
-    for (i, point) in offset_points.iter().enumerate() {
+    let result = JsArray::new(&mut cx, offset_points_result.len());
+    for (i, point) in offset_points_result.iter().enumerate() {
         let point_array = JsArray::new(&mut cx, 2);
         let lon = cx.number(point.lon);
         let lat = cx.number(point.lat);
@@ -402,6 +393,8 @@ fn offset_points_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     env_logger::init();
+
+    init_routing_thread_pool();
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus::get())

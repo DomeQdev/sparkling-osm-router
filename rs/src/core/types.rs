@@ -1,7 +1,10 @@
 use neon::prelude::*;
-use rstar::{PointDistance, RTree, RTreeObject, AABB};
+use rstar::{RTree, PointDistance, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Debug;
+
+use crate::routing::RouteGraph;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Node {
@@ -58,10 +61,27 @@ pub struct Graph {
     #[serde(skip)]
     pub profile: Option<Profile>,
     #[serde(skip)]
-    pub route_graph: Option<crate::routing::RouteGraph>,
+    pub route_graph: Option<RouteGraph>,
 }
 
 impl Finalize for Graph {}
+
+impl Graph {
+    pub fn new() -> Self {
+        Graph {
+            nodes: Default::default(),
+            ways: Default::default(),
+            relations: Default::default(),
+            way_rtree: rstar::RTree::new(),
+            profile: None,
+            route_graph: None,
+        }
+    }
+
+    pub fn set_profile(&mut self, profile: Profile) {
+        self.profile = Some(profile);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WayEnvelope {
@@ -80,22 +100,5 @@ impl RTreeObject for WayEnvelope {
 
     fn envelope(&self) -> Self::Envelope {
         self.envelope.clone()
-    }
-}
-
-impl Graph {
-    pub fn new() -> Self {
-        Graph {
-            nodes: HashMap::new(),
-            ways: HashMap::new(),
-            relations: HashMap::new(),
-            way_rtree: RTree::new(),
-            profile: None,
-            route_graph: None,
-        }
-    }
-
-    pub fn set_profile(&mut self, profile: Profile) {
-        self.profile = Some(profile);
     }
 }

@@ -1,6 +1,5 @@
-use crate::errors::Result;
-use crate::graph::Node;
-use crate::graph::{Graph, WayEnvelope};
+use crate::core::errors::Result;
+use crate::core::types::{Graph, Node, WayEnvelope};
 use crate::routing::{RouteEdge, RouteGraph, TurnRestriction, TurnRestrictionData};
 use rstar::{RTree, AABB};
 use rustc_hash::FxHashMap;
@@ -93,8 +92,9 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
             let cost = if let (Some(node1), Some(node2)) =
                 (graph.nodes.get(&from_node), graph.nodes.get(&to_node))
             {
-                let distance =
-                    crate::routing::haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon);
+                let distance = crate::spatial::geometry::haversine_distance(
+                    node1.lat, node1.lon, node2.lat, node2.lon
+                );
 
                 (distance * 1000.0 * (base_cost as f64)).round() as i64
             } else {
@@ -300,7 +300,7 @@ fn filter_graph(graph: &mut Graph) {
 }
 
 fn check_access_for_vehicle(
-    way: &crate::graph::Way,
+    way: &crate::core::types::Way,
     vehicle_tag: &str,
     highway_values: &[&str],
     additional_tags: &[&str],
@@ -371,7 +371,7 @@ fn process_turn_restrictions(graph: &mut Graph) {
 }
 
 fn process_single_restriction(
-    relation: &crate::graph::Relation,
+    relation: &crate::core::types::Relation,
     node_to_ways: &mut HashMap<i64, HashSet<i64>>,
     restriction_type: TurnRestriction,
 ) -> bool {
@@ -383,7 +383,6 @@ fn process_single_restriction(
     if let Some(except_tag) = relation.tags.get("except") {
         except_tag
             .split(';')
-            .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .for_each(|s| {
                 except.insert(s.to_string());
@@ -428,8 +427,8 @@ fn process_single_restriction(
 }
 
 fn calculate_way_envelope(
-    way: &crate::graph::Way,
-    nodes: &HashMap<i64, Node>,
+    way: &crate::core::types::Way,
+    nodes: &HashMap<i64, crate::core::types::Node>,
 ) -> Option<AABB<[f64; 2]>> {
     if way.node_refs.is_empty() {
         return None;

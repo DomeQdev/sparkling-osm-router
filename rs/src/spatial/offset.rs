@@ -1,4 +1,4 @@
-const EARTH_RADIUS: f64 = 6371000.0;
+use crate::spatial::geometry::EARTH_RADIUS;
 
 #[derive(Clone, Debug)]
 pub struct OffsetPoint {

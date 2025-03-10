@@ -1,6 +1,7 @@
-use crate::errors::Result;
-use crate::graph::{Graph, Node, Way};
-use crate::indexer::RESTRICTED_NODES;
+use crate::core::errors::Result;
+use crate::core::types::{Graph, Node, Way};
+use crate::spatial::geometry::{point_to_segment_distance, squared_distance};
+use crate::spatial::indexer::RESTRICTED_NODES;
 use std::collections::HashMap;
 
 impl Graph {
@@ -67,32 +68,7 @@ impl Graph {
     }
 }
 
-fn squared_distance(p1: &[f64; 2], p2: &[f64; 2]) -> f64 {
-    (p1[0] - p2[0]).powi(2) + (p1[1] - p2[1]).powi(2)
-}
-
-fn point_to_segment_distance(p: &[f64; 2], a: &[f64; 2], b: &[f64; 2]) -> f64 {
-    let ab_x = b[0] - a[0];
-    let ab_y = b[1] - a[1];
-
-    if ab_x.abs() < 1e-10 && ab_y.abs() < 1e-10 {
-        return squared_distance(p, a);
-    }
-
-    let ap_x = p[0] - a[0];
-    let ap_y = p[1] - a[1];
-
-    let t = (ap_x * ab_x + ap_y * ab_y) / (ab_x * ab_x + ab_y * ab_y);
-
-    let t_clamped = t.max(0.0).min(1.0);
-
-    let closest_x = a[0] + t_clamped * ab_x;
-    let closest_y = a[1] + t_clamped * ab_y;
-
-    (p[0] - closest_x).powi(2) + (p[1] - closest_y).powi(2)
-}
-
-fn find_nearest_point_on_way(
+pub fn find_nearest_point_on_way(
     ways: &HashMap<i64, Way>,
     nodes: &HashMap<i64, Node>,
     way_id: i64,
