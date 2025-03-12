@@ -3,13 +3,12 @@ mod algorithm;
 use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Graph, Node, Profile, Way};
 use crate::spatial::geometry::haversine_distance;
+pub use algorithm::find_route_bidirectional_astar;
 use rayon;
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use tokio::time::{timeout, Duration};
-
-pub use algorithm::*;
 
 thread_local! {
     static TURN_RESTRICTIONS: RefCell<Vec<TurnRestrictionData>> = RefCell::new(Vec::new());
@@ -57,6 +56,8 @@ pub struct RouteGraph {
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, Way>,
     pub profile: Option<Profile>,
+    pub landmarks: Option<Vec<i64>>,
+    pub landmark_distances: Option<crate::spatial::precomputation::DistanceMatrix>,
 }
 
 pub static ROUTING_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -78,7 +79,7 @@ impl Graph {
         end_node_id: i64,
         initial_bearing: Option<f64>,
     ) -> Result<Option<RouteResult>> {
-        let routing_graph = match &self.route_graph {
+        let mut routing_graph = match &self.route_graph {
             Some(graph) => graph.clone(),
             None => {
                 return Err(GraphError::InvalidOsmData(
@@ -107,8 +108,18 @@ impl Graph {
             Duration::from_secs(1800)
         };
 
+        if let (Some(landmarks), Some(distances)) = (&self.landmarks, &self.landmark_distances) {
+            routing_graph.landmarks = Some(landmarks.clone());
+            routing_graph.landmark_distances = Some(distances.clone());
+        }
+
         let route_future = tokio::task::spawn_blocking(move || {
-            find_route_astar(&routing_graph, start_node_id, end_node_id, initial_bearing)
+            find_route_bidirectional_astar(
+                &routing_graph,
+                start_node_id,
+                end_node_id,
+                initial_bearing,
+            )
         });
 
         match timeout(timeout_duration, route_future).await {

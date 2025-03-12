@@ -107,9 +107,8 @@ export { RouteQueue };
  * It handles loading graph data, finding routes, and managing graph nodes and ways.
  */
 class Graph {
-    
     static RouteQueue = RouteQueue;
-    
+
     private options: GraphOptions;
     private graph: number | null = null;
 
@@ -237,13 +236,15 @@ class Graph {
     /**
      * Creates a new route queue associated with this graph.
      * The graph must be loaded first.
+     * @param enableProgessBar Whether to enable progress bar for route calculations
      * @param maxConcurrency Optional maximum number of concurrent route calculations
      * @returns A new RouteQueue instance
      * @throws If the graph is not loaded
      */
-    createRouteQueue(maxConcurrency?: number): RouteQueue {
+    createRouteQueue(enableProgessBar: boolean = true, maxConcurrency?: number): RouteQueue {
         if (this.graph === null) throw new Error("Graph is not loaded");
-        return new RouteQueue(this, maxConcurrency);
+
+        return new RouteQueue(this.graph, enableProgessBar, maxConcurrency);
     }
 }
 

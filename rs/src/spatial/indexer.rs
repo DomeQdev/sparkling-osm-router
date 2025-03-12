@@ -1,6 +1,7 @@
 use crate::core::errors::Result;
 use crate::core::types::{Graph, Node, WayEnvelope};
 use crate::routing::{RouteEdge, RouteGraph, TurnRestriction, TurnRestrictionData};
+use crate::spatial::precomputation::{compute_distance_cache, precompute_landmarks};
 use rstar::{RTree, AABB};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -38,10 +39,36 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
 
     graph.route_graph = Some(build_routing_graph(&graph));
 
+    if let Some(route_graph) = &graph.route_graph {
+        let landmark_count = determine_landmark_count(&graph);
+        let landmarks = precompute_landmarks(&graph, landmark_count);
+
+        graph.landmarks = Some(landmarks.clone());
+
+        let distance_matrix = compute_distance_cache(route_graph, &landmarks);
+        graph.landmark_distances = Some(distance_matrix);
+    }
+
     update_graph_nodes(&graph);
     index_restricted_nodes(&graph);
 
     Ok(graph)
+}
+
+fn determine_landmark_count(graph: &Graph) -> usize {
+    let node_count = graph.nodes.len();
+
+    if node_count < 10_000 {
+        return 8;
+    } else if node_count < 50_000 {
+        return 16;
+    } else if node_count < 200_000 {
+        return 24;
+    } else if node_count < 500_000 {
+        return 32;
+    } else {
+        return 48;
+    }
 }
 
 fn build_routing_graph(graph: &Graph) -> RouteGraph {
@@ -93,7 +120,7 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
                 (graph.nodes.get(&from_node), graph.nodes.get(&to_node))
             {
                 let distance = crate::spatial::geometry::haversine_distance(
-                    node1.lat, node1.lon, node2.lat, node2.lon
+                    node1.lat, node1.lon, node2.lat, node2.lon,
                 );
 
                 (distance * 1000.0 * (base_cost as f64)).round() as i64
@@ -176,6 +203,8 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
         ways_map: FxHashMap::from_iter(graph.ways.clone()),
         profile: graph.profile.clone(),
+        landmarks: None,
+        landmark_distances: None,
     }
 }
 

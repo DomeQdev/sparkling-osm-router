@@ -37,20 +37,18 @@ export interface RouteQueueOptions {
  */
 export class RouteQueue {
     private queueId: number;
-    private graph: any;
+    private enableProgressBar: boolean;
     private processing: boolean = false;
 
     /**
      * Creates a new RouteQueue instance
      * @param graph The graph instance to use for routing
+     * @param enableProgressBar Whether to display a progress bar in the console
      * @param maxConcurrency Optional maximum number of concurrent tasks (defaults to CPU count - 1)
      */
-    constructor(graph: any, maxConcurrency: number = cpus().length - 1) {
-        this.graph = graph;
-        if (!graph.graph) {
-            throw new Error("Graph must be loaded before creating a RouteQueue");
-        }
-        this.queueId = createRouteQueue(graph.graph, maxConcurrency);
+    constructor(graph: number, enableProgressBar: boolean, maxConcurrency: number = cpus().length - 1) {
+        this.queueId = createRouteQueue(graph, maxConcurrency);
+        this.enableProgressBar = enableProgressBar;
     }
 
     /**
@@ -102,20 +100,33 @@ export class RouteQueue {
         try {
             return new Promise<void>((resolve) => {
                 const updateProgress = () => {
+                    if (!this.enableProgressBar) return;
+
                     const status = this.getStatus();
                     const completed = completedTasks;
                     const remaining = status.queuedTasks + status.activeTasks;
                     const total = completed + remaining;
-                    const percent = total > 0 ? Math.floor((completed / total) * 100) : 0;
+                    if (total === 0) return;
+
+                    const percent = Math.floor((completed / total) * 100);
 
                     const elapsedSeconds = (Date.now() - startTime) / 1000;
-                    const routesPerSecond =
-                        elapsedSeconds > 0 ? (completed / elapsedSeconds).toFixed(2) : "0.00";
+                    const routesPerSecond = elapsedSeconds > 0 ? completed / elapsedSeconds : 0;
+
+                    let etaString = "";
+                    if (routesPerSecond > 0 && remaining > 0) {
+                        const etaSeconds = Math.round(remaining / routesPerSecond);
+                        const etaMinutes = Math.floor(etaSeconds / 60);
+                        const etaRemainingSeconds = etaSeconds % 60;
+                        etaString = `${etaMinutes}m, ${etaRemainingSeconds.toString().padStart(2, "0")}s`;
+                    }
 
                     const progressBar = this.getProgressBar(percent);
 
                     process.stdout.write(
-                        `\r${progressBar} ${completed}/${total} (${percent}%) | ${routesPerSecond} routes/s`
+                        `\r${progressBar} ${completed}/${total} (${percent}%)` +
+                            ` | ${routesPerSecond.toFixed(2)} routes/s` +
+                            (etaString ? ` | ETA: ${etaString}` : "")
                     );
                 };
 
@@ -124,29 +135,24 @@ export class RouteQueue {
                     updateProgress();
 
                     if (status.isEmpty) {
+                        if (this.enableProgressBar) {
+                            process.stdout.write("\n");
+                        }
+
                         clearInterval(checkInterval);
                         this.processing = false;
-                        process.stdout.write("\n"); // Add a new line after completion
                         resolve();
                     }
-                }, 200);
+                }, 750);
 
                 startQueueProcessing(this.queueId, (id, result) => {
                     completedTasks++;
                     updateProgress();
 
                     if (result instanceof Error) {
-                        try {
-                            callback(id, null, result);
-                        } catch (e) {
-                            console.error(`Error in route callback for ${id}:`, e);
-                        }
+                        callback(id, null, result);
                     } else {
-                        try {
-                            callback(id, result);
-                        } catch (e) {
-                            console.error(`Error in route callback for ${id}:`, e);
-                        }
+                        callback(id, result);
                     }
                 });
             });

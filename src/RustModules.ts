@@ -21,8 +21,8 @@ export const loadAndIndexGraph: (path: string, graphId: number, profile: string)
     binding.loadAndIndexGraph;
 
 export const findNearestNode: (
-    lon: number, 
-    lat: number, 
+    lon: number,
+    lat: number,
     graphId: number,
     limit?: number,
     distanceThresholdMultiplier?: number
@@ -31,41 +31,33 @@ export const findNearestNode: (
 export const route: (
     startNode: number,
     endNode: number,
-    initialBearing: number | null,
+    bearing: number | null,
     graphId: number
-) => Promise<RouteResult> = binding.route;
+) => Promise<RouteResult> = (startNode, endNode, bearing, graphId) =>
+    binding.route(startNode, endNode, bearing, graphId);
 
 export const getNode: (node: number, graphId: number) => IOsmNodeData | null = binding.getNode;
 
 export const getWay: (way: number, graphId: number) => IOsmWayData | null = binding.getWay;
 
-export const getShape: (
-    graphId: number, 
-    nodes: number[]
-) => Location[] = binding.getShape;
+export const getShape: (graphId: number, nodes: number[]) => Location[] = binding.getShape;
 
-export const simplifyShape: (
-    graphId: number, 
-    nodes: number[], 
-    epsilon: number
-) => Location[] = binding.simplifyShape;
+export const simplifyShape: (graphId: number, nodes: number[], epsilon: number) => Location[] =
+    binding.simplifyShape;
 
-export const offsetPoints: (
-    points: Location[],
-    offsetMeters: number,
-    offsetSide: 1 | -1
-) => Location[] = binding.offsetPoints;
+export const offsetPoints: (points: Location[], offsetMeters: number, offsetSide: 1 | -1) => Location[] =
+    binding.offsetPoints;
 
 export const cleanupGraphStore: () => boolean = binding.cleanupGraphStore;
 
-export const createRouteQueue: (graphId: number, maxConcurrency?: number) => number = 
+export const createRouteQueue: (graphId: number, maxConcurrency?: number) => number =
     binding.createRouteQueue;
 
 export const enqueueRoute: (
-    queueId: number, 
-    routeId: string, 
-    startNode: number, 
-    endNode: number, 
+    queueId: number,
+    routeId: string,
+    startNode: number,
+    endNode: number,
     initialBearing: number | null
 ) => string = binding.enqueueRoute;
 
