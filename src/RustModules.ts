@@ -24,7 +24,8 @@ export const findNearestNode: (
     lon: number, 
     lat: number, 
     graphId: number,
-    limit?: number
+    limit?: number,
+    distanceThresholdMultiplier?: number
 ) => number[] = binding.findNearestNode;
 
 export const route: (

@@ -139,13 +139,13 @@ Creates a new graph instance with the provided options.
 
 Loads graph data. Should be called before using other methods.
 
-#### getNearestNode(coordinates: [lon, lat], limit: number = 1): number[]
+#### getNearestNode(location: [lon, lat], limit: number = 1, distanceThresholdMultiplier: number = 5.0): number[]
 
 Returns an array of IDs of the nearest nodes to the provided coordinates.
 
--   `coordinates` - array [longitude, latitude]
+-   `location` - array [longitude, latitude]
 -   `limit` - maximum number of nodes to return (default: 1)
--   `usePenalties` - whether to consider profile penalties (default: true)
+-   `distanceThresholdMultiplier` - multiplier for distance threshold when selecting multiple nodes (default: 5.0)
 
 #### getRoute(startNodes: number[], endNodes: number[], bearing?: number): Promise<RouteResult>
 
@@ -155,21 +155,30 @@ Calculates the best route between sets of nodes.
 -   `endNodes` - array of end node IDs
 -   `bearing` - optional initial direction in degrees
 
-#### getShape(route: RouteResult): Location[]
+#### getNodes({ nodes: number[] }): NodeData[]
+
+Returns detailed information about the specified nodes.
+
+-   `nodes` - array of node IDs
+
+#### getWays({ ways: number[] }): WayData[]
+
+Returns detailed information about the specified ways.
+
+-   `ways` - array of way IDs
+
+#### getShape({ nodes: number[] }): Location[]
 
 Returns the route shape as an array of coordinates.
 
-#### getSimplifiedShape(route: RouteResult, epsilon: number): Location[]
+-   `nodes` - array of node IDs from a route result
 
-Returns a simplified route shape as an array of coordinates.
-- `epsilon` - simplification tolerance (higher = more simplification)
+#### getSimplifiedShape({ nodes: number[] }, epsilon: number = 1e-5): Location[]
 
-#### getOffsetShape(route: RouteResult, offsetMeters: number = 1.5, offsetSide: 1 | -1 = 1): Location[]
+Returns a simplified route shape as an array of coordinates using the Ramer-Douglas-Peucker algorithm.
 
-Returns the route shape with an offset, useful for visualization.
-
--   `offsetMeters` - offset distance in meters (default: 1.5)
--   `offsetSide` - offset side, 1 for right, -1 for left (default: 1)
+-   `nodes` - array of node IDs from a route result
+-   `epsilon` - simplification tolerance (higher = more simplification, default: 1e-5)
 
 #### offsetShape(shape: Location[], offsetMeters: number = 1.5, offsetSide: 1 | -1 = 1): Location[]
 
@@ -248,16 +257,16 @@ await railGraph.loadGraph();
 ### Route Shape Simplification
 
 ```typescript
-// Oblicz trasę
+// Calculate route
 const route = await carGraph.getRoute(startNode, endNode);
 
-// Pobierz pełny kształt trasy
+// Get full route shape
 const fullShape = carGraph.getShape(route);
 
-// Pobierz uproszczony kształt (mniej punktów, szybsze renderowanie)
+// Get simplified shape (fewer points, faster rendering)
 const simplifiedShape = carGraph.getSimplifiedShape(route, 0.0001);
 
-// Użyj offsetu dla uproszczonego kształtu
+// Use offset for simplified shape
 const offsetShape = carGraph.offsetShape(simplifiedShape, 2.0, 1);
 ```
 
@@ -280,9 +289,9 @@ const route = await carGraph.getRoute(startNodes, endNodes);
 
 ```typescript
 const routes = await Promise.all([
-    carGraph.getRoute(startNode1, endNode1).then(carGraph.getShape),
-    carGraph.getRoute(startNode2, endNode2).then(carGraph.getShape),
-    carGraph.getRoute(startNode3, endNode3).then(carGraph.getShape),
+    carGraph.getRoute(startNodes1, endNodes1).then(carGraph.getShape),
+    carGraph.getRoute(startNodes2, endNodes2).then(carGraph.getShape),
+    carGraph.getRoute(startNodes3, endNodes3).then(carGraph.getShape),
 ]);
 ```
 
@@ -311,3 +320,4 @@ const bikeGraph = new Graph({
         vehicle_type: "bicycle",
     },
 });
+```

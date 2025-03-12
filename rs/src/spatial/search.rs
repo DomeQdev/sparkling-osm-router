@@ -10,6 +10,7 @@ impl Graph {
         lon: f64,
         lat: f64,
         limit: usize,
+        distance_threshold_multiplier: f64,
     ) -> Result<Vec<i64>> {
         let query_point: [f64; 2] = [lon, lat];
         let actual_limit = limit.max(1);
@@ -43,7 +44,8 @@ impl Graph {
 
         if candidates.len() > 1 && actual_limit > 1 {
             let closest_node_distance = candidates[0].1;
-            let distance_threshold = closest_node_distance * 3.0;
+            // Używamy mnożnika określonego przez użytkownika zamiast stałej wartości 5.0
+            let distance_threshold = closest_node_distance * distance_threshold_multiplier;
 
             let mut valid_count = 0;
             for i in 0..candidates.len() {

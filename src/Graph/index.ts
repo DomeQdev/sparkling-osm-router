@@ -145,15 +145,16 @@ class Graph {
      * Finds the nearest nodes to given coordinates.
      * @param location - Longitude and latitude coordinates
      * @param limit - Maximum number of nodes to return (default: 1)
+     * @param distanceThresholdMultiplier - Multiplier for distance threshold when selecting multiple nodes (default: 5.0)
      * @returns Array of IDs of the nearest nodes
      * @throws If the graph is not loaded
      */
-    getNearestNode = (location: Location, limit: number = 1) => {
+    getNearestNode = (location: Location, limit: number = 1, distanceThresholdMultiplier: number = 5.0) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
-        return findNearestNode(lon, lat, this.graph, limit);
+        return findNearestNode(lon, lat, this.graph, limit, distanceThresholdMultiplier);
     };
 
     /**
