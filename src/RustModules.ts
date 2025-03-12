@@ -29,8 +29,8 @@ export const findNearestNode: (
 ) => number[] = binding.findNearestNode;
 
 export const route: (
-    startNodes: number[],
-    endNodes: number[],
+    startNode: number,
+    endNode: number,
     initialBearing: number | null,
     graphId: number
 ) => Promise<RouteResult> = binding.route;
@@ -64,8 +64,8 @@ export const createRouteQueue: (graphId: number, maxConcurrency?: number) => num
 export const enqueueRoute: (
     queueId: number, 
     routeId: string, 
-    startNodes: number[], 
-    endNodes: number[], 
+    startNode: number, 
+    endNode: number, 
     initialBearing: number | null
 ) => string = binding.enqueueRoute;
 

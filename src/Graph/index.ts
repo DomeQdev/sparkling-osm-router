@@ -134,17 +134,17 @@ class Graph {
     };
 
     /**
-     * Calculates a route between sets of nodes.
-     * @param startNodes - Array of IDs of possible starting nodes
-     * @param endNodes - Array of IDs of possible ending nodes
+     * Calculates a route between two nodes.
+     * @param startNode - ID of the starting node
+     * @param endNode - ID of the ending node
      * @param bearing - Optional bearing direction in degrees
      * @returns The calculated route result
      * @throws If the graph is not loaded
      */
-    getRoute = async (startNodes: number[], endNodes: number[], bearing?: number): Promise<RouteResult> => {
+    getRoute = async (startNode: number, endNode: number, bearing?: number): Promise<RouteResult> => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
-        return route(startNodes, endNodes, bearing ?? null, this.graph);
+        return route(startNode, endNode, bearing ?? null, this.graph);
     };
 
     /**

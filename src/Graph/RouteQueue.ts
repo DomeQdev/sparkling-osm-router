@@ -15,14 +15,14 @@ import { RouteResult } from "./index";
  */
 export interface RouteQueueOptions {
     /**
-     * Array of IDs of possible starting nodes
+     * ID of the starting node
      */
-    startNodes: number[];
+    startNode: number;
 
     /**
-     * Array of IDs of possible ending nodes
+     * ID of the ending node
      */
-    endNodes: number[];
+    endNode: number;
 
     /**
      * Optional bearing direction in degrees
@@ -64,7 +64,7 @@ export class RouteQueue {
             throw new Error("Cannot add routes while queue is being processed");
         }
 
-        return enqueueRoute(this.queueId, id, options.startNodes, options.endNodes, options.bearing ?? null);
+        return enqueueRoute(this.queueId, id, options.startNode, options.endNode, options.bearing ?? null);
     }
 
     /**

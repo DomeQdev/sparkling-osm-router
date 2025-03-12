@@ -1,12 +1,10 @@
 mod core;
-mod graph;
 mod parser;
 mod queue;
 mod routing;
 mod spatial;
 
 use core::types::{Graph, Profile};
-use graph::SharedGraph;
 use neon::prelude::*;
 use parser::parse_osm_xml;
 use queue::{RouteQueue, RouteRequest};
@@ -22,7 +20,7 @@ use tokio::runtime::Runtime;
 
 lazy_static! {
     static ref TOKIO_RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
-    static ref GRAPH_STORAGE: Mutex<HashMap<i32, SharedGraph>> = Mutex::new(HashMap::new());
+    static ref GRAPH_STORAGE: Mutex<HashMap<i32, Arc<RwLock<Graph>>>> = Mutex::new(HashMap::new());
     static ref ROUTE_QUEUES: Mutex<HashMap<i32, Arc<RouteQueue>>> = Mutex::new(HashMap::new());
 }
 
@@ -113,23 +111,8 @@ fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
 }
 
 fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let start_nodes_arg = cx.argument::<JsArray>(0)?;
-    let mut start_nodes = Vec::with_capacity(start_nodes_arg.len(&mut cx) as usize);
-    for i in 0..start_nodes_arg.len(&mut cx) {
-        let node_id = start_nodes_arg
-            .get::<JsNumber, _, u32>(&mut cx, i)?
-            .value(&mut cx) as i64;
-        start_nodes.push(node_id);
-    }
-
-    let end_nodes_arg = cx.argument::<JsArray>(1)?;
-    let mut end_nodes = Vec::with_capacity(end_nodes_arg.len(&mut cx) as usize);
-    for i in 0..end_nodes_arg.len(&mut cx) {
-        let node_id = end_nodes_arg
-            .get::<JsNumber, _, u32>(&mut cx, i)?
-            .value(&mut cx) as i64;
-        end_nodes.push(node_id);
-    }
+    let start_node = cx.argument::<JsNumber>(0)?.value(&mut cx) as i64;
+    let end_node = cx.argument::<JsNumber>(1)?.value(&mut cx) as i64;
 
     let initial_bearing = {
         let bearing_arg = cx.argument::<JsValue>(2)?;
@@ -161,7 +144,7 @@ fn route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
             graph_store
                 .read()
                 .unwrap()
-                .route_multiple_nodes(&start_nodes, &end_nodes, initial_bearing)
+                .route(start_node, end_node, initial_bearing)
                 .await
         });
 
@@ -428,24 +411,8 @@ fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
 fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let route_id = cx.argument::<JsString>(1)?.value(&mut cx);
-
-    let start_nodes_arg = cx.argument::<JsArray>(2)?;
-    let mut start_nodes = Vec::with_capacity(start_nodes_arg.len(&mut cx) as usize);
-    for i in 0..start_nodes_arg.len(&mut cx) {
-        let node_id = start_nodes_arg
-            .get::<JsNumber, _, u32>(&mut cx, i)?
-            .value(&mut cx) as i64;
-        start_nodes.push(node_id);
-    }
-
-    let end_nodes_arg = cx.argument::<JsArray>(3)?;
-    let mut end_nodes = Vec::with_capacity(end_nodes_arg.len(&mut cx) as usize);
-    for i in 0..end_nodes_arg.len(&mut cx) {
-        let node_id = end_nodes_arg
-            .get::<JsNumber, _, u32>(&mut cx, i)?
-            .value(&mut cx) as i64;
-        end_nodes.push(node_id);
-    }
+    let start_node = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
+    let end_node = cx.argument::<JsNumber>(3)?.value(&mut cx) as i64;
 
     let initial_bearing = {
         let bearing_arg = cx.argument::<JsValue>(4)?;
@@ -469,8 +436,8 @@ fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
 
     let request = RouteRequest {
         id: route_id.clone(),
-        start_nodes,
-        end_nodes,
+        start_node,
+        end_node,
         initial_bearing,
     };
 

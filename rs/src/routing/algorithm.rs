@@ -79,17 +79,7 @@ pub fn find_route_astar(
         }
     };
 
-    let direct_distance = estimate_distance(start_node, end_node);
-
-    let max_iterations = if direct_distance < 20.0 {
-        1_000_000
-    } else if direct_distance < 100.0 {
-        5_000_000
-    } else if direct_distance < 500.0 {
-        20_000_000
-    } else {
-        50_000_000
-    };
+    let max_iterations = 1_000_000;
 
     let mut open_set = BinaryHeap::new();
     let mut came_from = FxHashMap::default();

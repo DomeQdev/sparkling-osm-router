@@ -72,38 +72,6 @@ pub fn init_routing_thread_pool() {
 }
 
 impl Graph {
-    pub async fn route_multiple_nodes(
-        &self,
-        start_nodes: &[i64],
-        end_nodes: &[i64],
-        initial_bearing: Option<f64>,
-    ) -> Result<Option<RouteResult>> {
-        if start_nodes.is_empty() || end_nodes.is_empty() {
-            return Ok(None);
-        }
-
-        let mut best_route: Option<RouteResult> = None;
-        let mut shortest_distance = f64::MAX;
-
-        for &start_node_id in start_nodes {
-            for &end_node_id in end_nodes {
-                if let Ok(Some(route)) = self
-                    .route(start_node_id, end_node_id, initial_bearing)
-                    .await
-                {
-                    let total_distance = crate::graph::calculate_route_distance(self, &route.nodes);
-
-                    if total_distance < shortest_distance {
-                        shortest_distance = total_distance;
-                        best_route = Some(route);
-                    }
-                }
-            }
-        }
-
-        Ok(best_route)
-    }
-
     pub async fn route(
         &self,
         start_node_id: i64,

@@ -44,11 +44,11 @@ const carGraph = new Graph({
 await carGraph.loadGraph();
 
 // Find nearest nodes to the provided coordinates
-const startNodes = carGraph.getNearestNode([20.924942, 52.272449], 3); // Get up to 3 nearest nodes
-const endNodes = carGraph.getNearestNode([21.046434, 52.265235], 3);   // Get up to 3 nearest nodes
+const startNode = carGraph.getNearestNode([20.924942, 52.272449])[0]; // Get the nearest node
+const endNode = carGraph.getNearestNode([21.046434, 52.265235])[0];  // Get the nearest node
 
-// Calculate the route - will find the best route among all combinations
-const route = await carGraph.getRoute(startNodes, endNodes);
+// Calculate the route
+const route = await carGraph.getRoute(startNode, endNode);
 
 // Get the route shape for visualization
 const routeShape = carGraph.getShape(route);
@@ -147,12 +147,12 @@ Returns an array of IDs of the nearest nodes to the provided coordinates.
 -   `limit` - maximum number of nodes to return (default: 1)
 -   `distanceThresholdMultiplier` - multiplier for distance threshold when selecting multiple nodes (default: 5.0)
 
-#### getRoute(startNodes: number[], endNodes: number[], bearing?: number): Promise<RouteResult>
+#### getRoute(startNode: number, endNode: number, bearing?: number): Promise<RouteResult>
 
-Calculates the best route between sets of nodes.
+Calculates the route between two nodes.
 
--   `startNodes` - array of start node IDs
--   `endNodes` - array of end node IDs
+-   `startNode` - starting node ID
+-   `endNode` - ending node ID
 -   `bearing` - optional initial direction in degrees
 
 #### getNodes({ nodes: number[] }): NodeData[]
@@ -192,6 +192,45 @@ Returns an offset shape for given coordinates.
 
 Releases graph resources.
 
+### RouteQueue
+
+For batch processing of multiple routing tasks with automatic distribution across processor threads.
+
+#### constructor(graph: Graph, maxConcurrency: number = cpus().length - 1)
+
+Creates a new RouteQueue instance.
+
+- `graph` - The graph instance to use for routing
+- `maxConcurrency` - Optional maximum number of concurrent tasks
+
+#### enqueueRoute(id: string, options: RouteQueueOptions): string
+
+Adds a route to the processing queue.
+
+- `id` - Unique identifier for this route
+- `options` - Route options containing:
+  - `startNode` - ID of starting node
+  - `endNode` - ID of ending node
+  - `bearing` - Optional bearing direction in degrees
+
+#### awaitAll(callback: (id: string, result: RouteResult | null, error?: Error) => void): Promise<void>
+
+Processes all queued route calculations and waits for them to complete.
+
+- `callback` - Function called for each completed route with its ID and result
+
+#### getStatus(): QueueStatus
+
+Gets the current status of the queue.
+
+#### clear(): void
+
+Clears all queued routes that haven't started processing yet.
+
+#### cleanup(): void
+
+Cleans up resources used by the queue.
+
 ## Usage Examples
 
 ### Car Routing
@@ -221,8 +260,8 @@ const carGraph = new Graph({
 });
 
 await carGraph.loadGraph();
-const start = carGraph.getNearestNode([20.924942, 52.272449]);
-const end = carGraph.getNearestNode([21.046434, 52.265235]);
+const start = carGraph.getNearestNode([20.924942, 52.272449])[0];
+const end = carGraph.getNearestNode([21.046434, 52.265235])[0];
 const route = await carGraph.getRoute(start, end);
 const shape = carGraph.getShape(route);
 ```
@@ -270,28 +309,60 @@ const simplifiedShape = carGraph.getSimplifiedShape(route, 0.0001);
 const offsetShape = carGraph.offsetShape(simplifiedShape, 2.0, 1);
 ```
 
-### Handling Complex Interchanges and Bridges
+### Batch Route Processing with RouteQueue
 
-When routing near complex road infrastructure like bridges or multi-level interchanges, it's useful to consider multiple nearest nodes:
+For efficient batch processing of multiple routes:
 
 ```typescript
-// For complex areas, get multiple candidate nodes
-const startNodes = carGraph.getNearestNode([20.924942, 52.272449], 5);
-const endNodes = carGraph.getNearestNode([21.046434, 52.265235], 5);
+const graph = new Graph({ /* configuration */ });
+await graph.loadGraph();
 
-// The router will calculate all possible combinations and return the best route
-const route = await carGraph.getRoute(startNodes, endNodes);
+// Create a route queue
+const queue = graph.createRouteQueue();
+
+// Add multiple routes to the queue
+queue.enqueueRoute("route1", { 
+    startNode: 123456, 
+    endNode: 789012
+});
+
+queue.enqueueRoute("route2", { 
+    startNode: 345678, 
+    endNode: 901234,
+    bearing: 45
+});
+
+// Process all routes and wait for completion
+await queue.awaitAll((id, result, error) => {
+    if (error) {
+        console.error(`Route ${id} failed:`, error);
+        return;
+    }
+    
+    if (!result) {
+        console.log(`No route found for ${id}`);
+        return;
+    }
+    
+    console.log(`Route ${id} found with ${result.nodes.length} points`);
+    
+    // Process the route result
+    const shape = graph.getShape({ nodes: result.nodes });
+    saveRoute(id, shape); // Implement this function
+});
+
+// Clean up
+queue.cleanup();
+graph.cleanup();
 ```
-
-## Advanced Usage
 
 ### Parallel Calculation of Multiple Routes
 
 ```typescript
 const routes = await Promise.all([
-    carGraph.getRoute(startNodes1, endNodes1).then(carGraph.getShape),
-    carGraph.getRoute(startNodes2, endNodes2).then(carGraph.getShape),
-    carGraph.getRoute(startNodes3, endNodes3).then(carGraph.getShape),
+    carGraph.getRoute(startNode1, endNode1).then(result => carGraph.getShape(result)),
+    carGraph.getRoute(startNode2, endNode2).then(result => carGraph.getShape(result)),
+    carGraph.getRoute(startNode3, endNode3).then(result => carGraph.getShape(result)),
 ]);
 ```
 

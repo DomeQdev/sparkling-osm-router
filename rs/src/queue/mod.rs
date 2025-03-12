@@ -6,8 +6,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct RouteRequest {
     pub id: String,
-    pub start_nodes: Vec<i64>,
-    pub end_nodes: Vec<i64>,
+    pub start_node: i64,
+    pub end_node: i64,
     pub initial_bearing: Option<f64>,
 }
 
@@ -77,8 +77,8 @@ impl RouteQueue {
             let self_clone = self.clone();
             let graph_clone = self.graph.clone();
             let request_id = request.id.clone();
-            let start_nodes = request.start_nodes;
-            let end_nodes = request.end_nodes;
+            let start_node = request.start_node;
+            let end_node = request.end_node;
             let initial_bearing = request.initial_bearing;
             let callback_clone = callback;
             let channel_clone = channel;
@@ -91,7 +91,7 @@ impl RouteQueue {
                         let graph_guard = graph_clone.read().unwrap();
                         crate::TOKIO_RUNTIME.block_on(async {
                             graph_guard
-                                .route_multiple_nodes(&start_nodes, &end_nodes, initial_bearing)
+                                .route(start_node, end_node, initial_bearing)
                                 .await
                         })
                     };
