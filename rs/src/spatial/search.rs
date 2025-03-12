@@ -44,7 +44,7 @@ impl Graph {
 
         if candidates.len() > 1 && actual_limit > 1 {
             let closest_node_distance = candidates[0].1;
-            // Używamy mnożnika określonego przez użytkownika zamiast stałej wartości 5.0
+
             let distance_threshold = closest_node_distance * distance_threshold_multiplier;
 
             let mut valid_count = 0;

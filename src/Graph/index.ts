@@ -16,6 +16,7 @@ import {
     simplifyShape as simplifyShapeRust,
 } from "../RustModules";
 import loadOSMGraph from "./loadOSMGraph";
+import { RouteQueue } from "./RouteQueue";
 
 export type Location = [number, number];
 
@@ -99,11 +100,16 @@ export type RouteResult = {
     ways: number[];
 };
 
+export { RouteQueue };
+
 /**
  * Graph class that provides routing functionality using OSM data.
  * It handles loading graph data, finding routes, and managing graph nodes and ways.
  */
 class Graph {
+    
+    static RouteQueue = RouteQueue;
+    
     private options: GraphOptions;
     private graph: number | null = null;
 
@@ -227,6 +233,18 @@ class Graph {
         this.graph = null;
         return cleanupGraphStore();
     };
+
+    /**
+     * Creates a new route queue associated with this graph.
+     * The graph must be loaded first.
+     * @param maxConcurrency Optional maximum number of concurrent route calculations
+     * @returns A new RouteQueue instance
+     * @throws If the graph is not loaded
+     */
+    createRouteQueue(maxConcurrency?: number): RouteQueue {
+        if (this.graph === null) throw new Error("Graph is not loaded");
+        return new RouteQueue(this, maxConcurrency);
+    }
 }
 
 export default Graph;

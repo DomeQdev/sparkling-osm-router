@@ -1,6 +1,7 @@
 mod core;
 mod graph;
 mod parser;
+mod queue;
 mod routing;
 mod spatial;
 
@@ -8,6 +9,7 @@ use core::types::{Graph, Profile};
 use graph::SharedGraph;
 use neon::prelude::*;
 use parser::parse_osm_xml;
+use queue::{RouteQueue, RouteRequest};
 use routing::{init_routing_thread_pool, ROUTING_THREAD_POOL};
 use spatial::indexer::{index_graph, GRAPH_NODES};
 use spatial::offset::offset_points;
@@ -21,9 +23,10 @@ use tokio::runtime::Runtime;
 lazy_static! {
     static ref TOKIO_RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
     static ref GRAPH_STORAGE: Mutex<HashMap<i32, SharedGraph>> = Mutex::new(HashMap::new());
+    static ref ROUTE_QUEUES: Mutex<HashMap<i32, Arc<RouteQueue>>> = Mutex::new(HashMap::new());
 }
 
-static mut NEXT_GRAPH_ID: i32 = 1;
+static mut NEXT_QUEUE_ID: i32 = 1;
 
 fn load_and_index_graph_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let file_path_js = cx.argument::<JsString>(0)?;
@@ -79,7 +82,7 @@ fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     let distance_threshold_multiplier = if cx.len() > 4 {
         cx.argument::<JsNumber>(4)?.value(&mut cx)
     } else {
-        5.0 // Domyślna wartość, gdy użytkownik nie poda mnożnika
+        5.0
     };
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
@@ -87,10 +90,12 @@ fn find_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
         None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
     };
 
-    let nearest_result = graph_store
-        .read()
-        .unwrap()
-        .find_nearest_ways_and_nodes(lon, lat, limit, distance_threshold_multiplier);
+    let nearest_result = graph_store.read().unwrap().find_nearest_ways_and_nodes(
+        lon,
+        lat,
+        limit,
+        distance_threshold_multiplier,
+    );
 
     match nearest_result {
         Ok(node_ids) => {
@@ -202,8 +207,8 @@ fn create_graph_store(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let shared_graph = Arc::new(RwLock::new(graph));
 
     let graph_id = unsafe {
-        let id = NEXT_GRAPH_ID;
-        NEXT_GRAPH_ID += 1;
+        let id = NEXT_QUEUE_ID;
+        NEXT_QUEUE_ID += 1;
         id
     };
 
@@ -287,10 +292,6 @@ fn get_way_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
 
 fn cleanup_graph_store_rust(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     GRAPH_STORAGE.lock().unwrap().clear();
-
-    unsafe {
-        NEXT_GRAPH_ID = 1;
-    }
 
     Ok(cx.boolean(true))
 }
@@ -395,6 +396,252 @@ fn offset_points_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     Ok(result)
 }
 
+fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+
+    let max_concurrency = if cx.len() > 1 {
+        Some(cx.argument::<JsNumber>(1)?.value(&mut cx) as usize)
+    } else {
+        None
+    };
+
+    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(graph) => graph.clone(),
+        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    };
+
+    let route_queue = RouteQueue::new(graph_store, max_concurrency);
+    let queue_id = unsafe {
+        let id = NEXT_QUEUE_ID;
+        NEXT_QUEUE_ID += 1;
+        id
+    };
+
+    ROUTE_QUEUES
+        .lock()
+        .unwrap()
+        .insert(queue_id, Arc::new(route_queue));
+
+    Ok(cx.number(queue_id as f64))
+}
+
+fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
+    let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let route_id = cx.argument::<JsString>(1)?.value(&mut cx);
+
+    let start_nodes_arg = cx.argument::<JsArray>(2)?;
+    let mut start_nodes = Vec::with_capacity(start_nodes_arg.len(&mut cx) as usize);
+    for i in 0..start_nodes_arg.len(&mut cx) {
+        let node_id = start_nodes_arg
+            .get::<JsNumber, _, u32>(&mut cx, i)?
+            .value(&mut cx) as i64;
+        start_nodes.push(node_id);
+    }
+
+    let end_nodes_arg = cx.argument::<JsArray>(3)?;
+    let mut end_nodes = Vec::with_capacity(end_nodes_arg.len(&mut cx) as usize);
+    for i in 0..end_nodes_arg.len(&mut cx) {
+        let node_id = end_nodes_arg
+            .get::<JsNumber, _, u32>(&mut cx, i)?
+            .value(&mut cx) as i64;
+        end_nodes.push(node_id);
+    }
+
+    let initial_bearing = {
+        let bearing_arg = cx.argument::<JsValue>(4)?;
+        if bearing_arg.is_a::<JsNull, _>(&mut cx) {
+            None
+        } else {
+            Some(
+                bearing_arg
+                    .downcast::<JsNumber, _>(&mut cx)
+                    .or_else(|_| cx.throw_error("Initial bearing must be a number or null"))?
+                    .value(&mut cx),
+            )
+        }
+    };
+
+    let queues = ROUTE_QUEUES.lock().unwrap();
+    let queue = match queues.get(&queue_id) {
+        Some(queue) => queue.clone(),
+        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+    };
+
+    let request = RouteRequest {
+        id: route_id.clone(),
+        start_nodes,
+        end_nodes,
+        initial_bearing,
+    };
+
+    let request_id = queue.enqueue(request);
+
+    Ok(cx.string(request_id))
+}
+
+fn start_queue_processing(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
+
+    let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+        Some(queue) => queue.clone(),
+        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+    };
+
+    let channel = cx.channel();
+
+    if queue.is_empty() {
+        return Ok(cx.undefined());
+    }
+
+    let callback_clone = callback.clone(&mut cx);
+    let max_concurrency = queue.max_concurrency;
+    queue.start_processing(&mut cx, channel.clone(), callback_clone, max_concurrency);
+
+    let process_checker = JsFunction::new(&mut cx, move |mut cx| {
+        let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+        let route_callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
+
+        let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+            Some(q) => q.clone(),
+            None => return Ok(cx.undefined()),
+        };
+
+        if queue.is_empty() {
+            return Ok(cx.undefined());
+        }
+
+        let channel = cx.channel();
+        queue.start_processing(&mut cx, channel, route_callback, queue.max_concurrency);
+
+        Ok(cx.undefined())
+    })?;
+
+    let setup_interval = JsFunction::new(&mut cx, move |mut cx| {
+        let global = cx.global::<JsObject>("global").unwrap_or_else(|_| {
+            cx.global::<JsObject>("window").unwrap_or_else(|_| {
+                cx.global::<JsObject>("self")
+                    .unwrap_or_else(|_| cx.global::<JsObject>("globalThis").unwrap())
+            })
+        });
+
+        let set_interval = global
+            .get::<JsFunction, _, _>(&mut cx, "setInterval")
+            .unwrap();
+
+        let _clear_interval = global
+            .get::<JsFunction, _, _>(&mut cx, "clearInterval")
+            .unwrap();
+
+        let check_fn = cx.argument::<JsFunction>(0)?;
+        let queue_id = cx.argument::<JsNumber>(1)?.value(&mut cx);
+        let route_callback = cx.argument::<JsFunction>(2)?;
+        let interval = cx.number(100);
+
+        let args: Vec<Handle<JsValue>> = vec![
+            check_fn.upcast(),
+            interval.upcast(),
+            cx.number(queue_id).upcast(),
+            route_callback.upcast(),
+        ];
+
+        let interval_id = set_interval.call(&mut cx, global, args)?;
+
+        let check_queue = JsFunction::new(&mut cx, move |mut cx| {
+            let interval_id = cx.argument::<JsValue>(0)?;
+            let queue_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
+
+            let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+                Some(q) => q.clone(),
+                None => {
+                    let global = cx.global::<JsObject>("globalThis").unwrap();
+                    let clear_interval = global
+                        .get::<JsFunction, _, _>(&mut cx, "clearInterval")
+                        .unwrap();
+                    let _ = clear_interval.call(&mut cx, global, [interval_id]);
+                    return Ok(cx.undefined());
+                }
+            };
+
+            if queue.is_empty() {
+                let global = cx.global::<JsObject>("globalThis").unwrap();
+                let clear_interval = global
+                    .get::<JsFunction, _, _>(&mut cx, "clearInterval")
+                    .unwrap();
+                let _ = clear_interval.call(&mut cx, global, [interval_id]);
+            }
+
+            Ok(cx.undefined())
+        })?;
+
+        let check_args: Vec<Handle<JsValue>> = vec![
+            check_queue.upcast(),
+            cx.number(500).upcast(),
+            interval_id,
+            cx.number(queue_id).upcast(),
+        ];
+
+        let _ = set_interval.call(&mut cx, global, check_args)?;
+
+        Ok(cx.undefined())
+    })?;
+
+    let undefined = cx.undefined();
+    let queue_id_arg = cx.number(queue_id);
+    let input_callback_arg = cx.argument::<JsFunction>(1)?;
+
+    let mut call_args: Vec<Handle<JsValue>> = Vec::new();
+    call_args.push(process_checker.upcast());
+    call_args.push(queue_id_arg.upcast());
+    call_args.push(input_callback_arg.upcast());
+
+    setup_interval.call(&mut cx, undefined, call_args)?;
+
+    Ok(cx.undefined())
+}
+
+fn get_queue_status(mut cx: FunctionContext) -> JsResult<JsObject> {
+    let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+
+    let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+        Some(queue) => queue.clone(),
+        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+    };
+
+    let obj = cx.empty_object();
+    let queue_size = cx.number(queue.queue_size() as f64);
+    let active_count = cx.number(queue.active_count() as f64);
+    let is_empty = cx.boolean(queue.is_empty());
+
+    obj.set(&mut cx, "queuedTasks", queue_size)?;
+    obj.set(&mut cx, "activeTasks", active_count)?;
+    obj.set(&mut cx, "isEmpty", is_empty)?;
+
+    Ok(obj)
+}
+
+fn clear_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+
+    let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+        Some(queue) => queue.clone(),
+        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+    };
+
+    queue.clear();
+
+    Ok(cx.boolean(true))
+}
+
+fn cleanup_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+
+    let mut queues = ROUTE_QUEUES.lock().unwrap();
+    queues.remove(&queue_id);
+
+    Ok(cx.boolean(true))
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     env_logger::init();
@@ -416,5 +663,13 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("simplifyShape", simplify_shape_rust)?;
     cx.export_function("offsetPoints", offset_points_rust)?;
     cx.export_function("cleanupGraphStore", cleanup_graph_store_rust)?;
+
+    cx.export_function("createRouteQueue", create_route_queue)?;
+    cx.export_function("enqueueRoute", enqueue_route)?;
+    cx.export_function("startQueueProcessing", start_queue_processing)?;
+    cx.export_function("getQueueStatus", get_queue_status)?;
+    cx.export_function("clearRouteQueue", clear_route_queue)?;
+    cx.export_function("cleanupRouteQueue", cleanup_route_queue)?;
+
     Ok(())
 }

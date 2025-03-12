@@ -24,3 +24,4 @@ async-trait = "0.1"
 futures = "0.3"
 rustc-hash = "2.1.1"
 lru = "0.13"
+uuid = { version = "1.8", features = ["v4"] }

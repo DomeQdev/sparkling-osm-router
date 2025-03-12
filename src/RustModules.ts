@@ -57,3 +57,31 @@ export const offsetPoints: (
 ) => Location[] = binding.offsetPoints;
 
 export const cleanupGraphStore: () => boolean = binding.cleanupGraphStore;
+
+export const createRouteQueue: (graphId: number, maxConcurrency?: number) => number = 
+    binding.createRouteQueue;
+
+export const enqueueRoute: (
+    queueId: number, 
+    routeId: string, 
+    startNodes: number[], 
+    endNodes: number[], 
+    initialBearing: number | null
+) => string = binding.enqueueRoute;
+
+export const startQueueProcessing: (
+    queueId: number,
+    callback: (id: string, result: RouteResult | null | Error) => void
+) => void = binding.startQueueProcessing;
+
+export interface QueueStatus {
+    queuedTasks: number;
+    activeTasks: number;
+    isEmpty: boolean;
+}
+
+export const getQueueStatus: (queueId: number) => QueueStatus = binding.getQueueStatus;
+
+export const clearRouteQueue: (queueId: number) => boolean = binding.clearRouteQueue;
+
+export const cleanupRouteQueue: (queueId: number) => boolean = binding.cleanupRouteQueue;
