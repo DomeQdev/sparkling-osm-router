@@ -98,6 +98,8 @@ export class RouteQueue {
         let completedTasks = 0;
 
         try {
+            let lastOutputLength = 0;
+
             return new Promise<void>((resolve) => {
                 const updateProgress = () => {
                     if (!this.enableProgressBar) return;
@@ -123,11 +125,16 @@ export class RouteQueue {
 
                     const progressBar = this.getProgressBar(percent);
 
-                    process.stdout.write(
-                        `\r${progressBar} ${completed}/${total} (${percent}%)` +
-                            ` | ${routesPerSecond.toFixed(2)} routes/s` +
-                            (etaString ? ` | ETA: ${etaString}` : "")
-                    );
+                    const output =
+                        `${progressBar} ${completed}/${total} (${percent}%)` +
+                        ` | ${routesPerSecond.toFixed(2)} routes/s` +
+                        (etaString ? ` | ETA: ${etaString}` : "");
+
+                    const paddedOutput = output + " ".repeat(Math.max(0, lastOutputLength - output.length));
+
+                    lastOutputLength = output.length;
+
+                    process.stdout.write(`\r${paddedOutput}`);
                 };
 
                 const checkInterval = setInterval(() => {
