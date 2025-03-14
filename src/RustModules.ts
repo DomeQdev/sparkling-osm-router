@@ -15,6 +15,11 @@ export interface IOsmWayData {
     tags: Record<string, string>;
 }
 
+export interface SearchNodeResult {
+    id: number;
+    score: number;
+}
+
 export const createGraphStore: () => number = binding.createGraphStore;
 
 export const loadAndIndexGraph: (path: string, graphId: number, profile: string) => boolean =
@@ -27,6 +32,9 @@ export const findNearestNode: (
     limit?: number,
     distanceThresholdMultiplier?: number
 ) => number[] = binding.findNearestNode;
+
+export const searchNearestNode: (lon: number, lat: number, searchString: string, graphId: number) => number =
+    binding.searchNearestNode;
 
 export const route: (
     startNode: number,

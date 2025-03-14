@@ -608,6 +608,32 @@ fn cleanup_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 
     Ok(cx.boolean(true))
 }
+fn search_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let lon = cx.argument::<JsNumber>(0)?.value(&mut cx);
+    let lat = cx.argument::<JsNumber>(1)?.value(&mut cx);
+    let search_string = cx.argument::<JsString>(2)?.value(&mut cx);
+    let graph_id = cx.argument::<JsNumber>(3)?.value(&mut cx) as i32;
+
+    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(graph) => graph.clone(),
+        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    };
+
+    let search_result =
+        graph_store
+            .read()
+            .unwrap()
+            .find_nodes_by_tags_and_location(lon, lat, &search_string);
+
+    match search_result {
+        Ok(Some((node_id, _))) => {
+            let js_id = cx.number(node_id as f64);
+            Ok(js_id.upcast())
+        }
+        Ok(None) => Ok(cx.null().upcast()),
+        Err(e) => cx.throw_error(&format!("Error searching nodes by tags: {}", e)),
+    }
+}
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -623,6 +649,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("createGraphStore", create_graph_store)?;
     cx.export_function("loadAndIndexGraph", load_and_index_graph_rust)?;
     cx.export_function("findNearestNode", find_nearest_node_rust)?;
+    cx.export_function("searchNearestNode", search_nearest_node_rust)?;
     cx.export_function("route", route_rust)?;
     cx.export_function("getNode", get_node_rust)?;
     cx.export_function("getWay", get_way_rust)?;

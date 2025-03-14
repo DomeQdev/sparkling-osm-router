@@ -108,7 +108,7 @@ pub fn find_route_bidirectional_astar(
         previous_node_id: None,
         previous_way_id: None,
         cost: 0,
-        estimated_total_cost: heuristic_cost_optimized(start_node, end_node),
+        estimated_total_cost: heuristic_cost(start_node, end_node),
     });
 
     open_set_backward.push(NodeWithPrevious {
@@ -116,7 +116,7 @@ pub fn find_route_bidirectional_astar(
         previous_node_id: None,
         previous_way_id: None,
         cost: 0,
-        estimated_total_cost: heuristic_cost_optimized(end_node, start_node),
+        estimated_total_cost: heuristic_cost(end_node, start_node),
     });
 
     let max_iterations = 250_000;
@@ -283,8 +283,8 @@ fn process_edges_reverse(
 
         if !is_turn_allowed(
             graph,
-            Some(edge.way_id),
-            Some(edge.to_node),
+            current.previous_way_id,
+            current.previous_node_id,
             current.node_id,
             edge.way_id,
             to_node,
@@ -300,7 +300,7 @@ fn process_edges_reverse(
             g_score.insert(to_node, tentative_g_score);
 
             if let Some(node) = graph.nodes_map.get(&to_node) {
-                let h_cost = heuristic_cost_optimized(node, target_node);
+                let h_cost = heuristic_cost(node, target_node);
 
                 open_set.push(NodeWithPrevious {
                     node_id: to_node,
@@ -361,31 +361,10 @@ fn reconstruct_path_backward(
     (path_nodes, path_ways)
 }
 
-fn heuristic_cost_optimized(node: &Node, end_node: &Node) -> i64 {
+fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
     let distance = estimate_distance(node, end_node);
     let heuristic_factor = 25.0;
     return (distance * 1000.0 * heuristic_factor) as i64;
-}
-
-fn landmark_heuristic(
-    _graph: &RouteGraph,
-    node_id: i64,
-    target_id: i64,
-    landmarks: &[i64],
-    distances: &crate::spatial::precomputation::DistanceMatrix,
-) -> i64 {
-    let mut max_estimate = 0;
-
-    for &landmark_id in landmarks {
-        if let (Some(&dist_landmark_to_target), Some(&dist_node_to_landmark)) = (
-            distances.get_distance(landmark_id, target_id),
-            distances.get_distance(landmark_id, node_id),
-        ) {
-            let estimate = (dist_landmark_to_target - dist_node_to_landmark).abs();
-            max_estimate = max_estimate.max(estimate);
-        }
-    }
-    max_estimate
 }
 
 fn estimate_distance(node1: &Node, node2: &Node) -> f64 {
@@ -410,9 +389,6 @@ fn process_edges(
     g_score: &mut FxHashMap<i64, i64>,
     current_g_score: i64,
 ) {
-    let landmarks = graph.landmarks.as_ref();
-    let distance_matrix = graph.landmark_distances.as_ref();
-    let end_node_id = end_node.id;
     for edge in edges {
         if Some(edge.to_node) == current.previous_node_id {
             continue;
@@ -432,11 +408,7 @@ fn process_edges(
                 came_from.insert(edge.to_node, (current.node_id, edge.way_id));
                 g_score.insert(edge.to_node, tentative_g_score);
                 if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
-                    let h_cost = if let (Some(lm), Some(dm)) = (landmarks, distance_matrix) {
-                        landmark_heuristic(graph, edge.to_node, end_node_id, lm, dm)
-                    } else {
-                        heuristic_cost_optimized(to_node, end_node)
-                    };
+                    let h_cost = heuristic_cost(to_node, end_node);
                     open_set.push(NodeWithPrevious {
                         node_id: edge.to_node,
                         previous_node_id: Some(current.node_id),
@@ -522,13 +494,6 @@ fn process_edges_with_bearing(
             }
         }
     }
-}
-
-fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
-    let distance = haversine_distance(node.lat, node.lon, end_node.lat, end_node.lon);
-
-    let heuristic_factor = 25.0;
-    return (distance * 1000.0 * heuristic_factor) as i64;
 }
 
 fn calculate_edge_cost(graph: &RouteGraph, edge: &crate::routing::RouteEdge) -> i64 {

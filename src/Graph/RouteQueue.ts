@@ -94,8 +94,11 @@ export class RouteQueue {
         }
 
         this.processing = true;
+
+        const completionTimes: number[] = [];
         const startTime = Date.now();
         let completedTasks = 0;
+        let emptyCount = 0;
 
         try {
             let lastOutputLength = 0;
@@ -112,8 +115,23 @@ export class RouteQueue {
 
                     const percent = Math.floor((completed / total) * 100);
 
-                    const elapsedSeconds = (Date.now() - startTime) / 1000;
-                    const routesPerSecond = elapsedSeconds > 0 ? completed / elapsedSeconds : 0;
+                    const currentTime = Date.now();
+                    const elapsedSeconds = (currentTime - startTime) / 1000;
+
+                    const timeWindow = 30 * 1000;
+                    const cutoffTime = currentTime - timeWindow;
+
+                    while (completionTimes.length > 0 && completionTimes[0] < cutoffTime) {
+                        completionTimes.shift();
+                    }
+
+                    let routesPerSecond;
+                    if (completionTimes.length > 0 && currentTime - completionTimes[0] > 1000) {
+                        const windowDuration = (currentTime - completionTimes[0]) / 1000;
+                        routesPerSecond = completionTimes.length / windowDuration;
+                    } else {
+                        routesPerSecond = elapsedSeconds > 0 ? completed / elapsedSeconds : 0;
+                    }
 
                     let etaString = "";
                     if (routesPerSecond > 0 && remaining > 0) {
@@ -128,6 +146,7 @@ export class RouteQueue {
                     const output =
                         `${progressBar} ${completed}/${total} (${percent}%)` +
                         ` | ${routesPerSecond.toFixed(2)} routes/s` +
+                        (emptyCount > 0 ? ` | ${emptyCount} empty` : "") +
                         (etaString ? ` | ETA: ${etaString}` : "");
 
                     const paddedOutput = output + " ".repeat(Math.max(0, lastOutputLength - output.length));
@@ -154,11 +173,15 @@ export class RouteQueue {
 
                 startQueueProcessing(this.queueId, (id, result) => {
                     completedTasks++;
+
+                    completionTimes.push(Date.now());
                     updateProgress();
 
                     if (result instanceof Error) {
                         callback(id, null, result);
                     } else {
+                        if (!result || !result.ways.length) emptyCount++;
+
                         callback(id, result);
                     }
                 });

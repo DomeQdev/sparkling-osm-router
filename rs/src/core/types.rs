@@ -1,5 +1,4 @@
 use crate::routing::RouteGraph;
-use crate::spatial::precomputation::DistanceMatrix;
 use neon::prelude::*;
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
@@ -62,10 +61,6 @@ pub struct Graph {
     pub profile: Option<Profile>,
     #[serde(skip)]
     pub route_graph: Option<RouteGraph>,
-    #[serde(skip)]
-    pub landmarks: Option<Vec<i64>>,
-    #[serde(skip)]
-    pub landmark_distances: Option<DistanceMatrix>,
 }
 
 impl Finalize for Graph {}
@@ -79,8 +74,6 @@ impl Graph {
             way_rtree: rstar::RTree::new(),
             profile: None,
             route_graph: None,
-            landmarks: None,
-            landmark_distances: None,
         }
     }
 

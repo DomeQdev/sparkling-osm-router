@@ -56,8 +56,6 @@ pub struct RouteGraph {
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, Way>,
     pub profile: Option<Profile>,
-    pub landmarks: Option<Vec<i64>>,
-    pub landmark_distances: Option<crate::spatial::precomputation::DistanceMatrix>,
 }
 
 pub static ROUTING_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -79,7 +77,7 @@ impl Graph {
         end_node_id: i64,
         initial_bearing: Option<f64>,
     ) -> Result<Option<RouteResult>> {
-        let mut routing_graph = match &self.route_graph {
+        let routing_graph = match &self.route_graph {
             Some(graph) => graph.clone(),
             None => {
                 return Err(GraphError::InvalidOsmData(
@@ -107,11 +105,6 @@ impl Graph {
         } else {
             Duration::from_secs(1800)
         };
-
-        if let (Some(landmarks), Some(distances)) = (&self.landmarks, &self.landmark_distances) {
-            routing_graph.landmarks = Some(landmarks.clone());
-            routing_graph.landmark_distances = Some(distances.clone());
-        }
 
         let route_future = tokio::task::spawn_blocking(move || {
             find_route_bidirectional_astar(

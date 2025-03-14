@@ -147,6 +147,17 @@ Returns an array of IDs of the nearest nodes to the provided coordinates.
 -   `limit` - maximum number of nodes to return (default: 1)
 -   `distanceThresholdMultiplier` - multiplier for distance threshold when selecting multiple nodes (default: 5.0)
 
+#### searchNearestNode(location: [lon, lat], searchString: string): { id: number, score: number }
+
+Searches for a node near the given coordinates that best matches the search string in its tags.
+
+-   `location` - array [longitude, latitude]
+-   `searchString` - string to search for in node tags (e.g., "100101 Kijowska 01")
+
+Returns a single best match node with its ID and a score indicating the quality of the match.
+The function internally searches among nearby nodes (using a larger search radius than getNearestNode)
+and evaluates matches in their tag values and keys.
+
 #### getRoute(startNode: number, endNode: number, bearing?: number): Promise<RouteResult>
 
 Calculates the route between two nodes.
@@ -264,6 +275,25 @@ const start = carGraph.getNearestNode([20.924942, 52.272449])[0];
 const end = carGraph.getNearestNode([21.046434, 52.265235])[0];
 const route = await carGraph.getRoute(start, end);
 const shape = carGraph.getShape(route);
+```
+
+### Finding a Public Transport Stop by Name and Coordinates
+
+```typescript
+const transportGraph = new Graph({ /* configuration */ });
+await transportGraph.loadGraph();
+
+// Find a bus stop by its name and reference number
+const busStop = transportGraph.searchNearestNode(
+  [21.03324, 52.22679],    // approximate location
+  "100101 Kijowska 01"     // search string containing stop ID and name
+);
+
+if (busStop) {
+  console.log(`Found bus stop with ID: ${busStop.id}, match score: ${busStop.score}`);
+  const stopData = transportGraph.getNodes({ nodes: [busStop.id] })[0];
+  console.log(`Bus stop tags:`, stopData.tags);
+}
 ```
 
 ### Public Transport Routing

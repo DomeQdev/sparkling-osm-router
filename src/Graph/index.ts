@@ -13,6 +13,7 @@ import {
     loadAndIndexGraph,
     offsetPoints,
     route,
+    searchNearestNode as searchNearestNodeRust,
     simplifyShape as simplifyShapeRust,
 } from "../RustModules";
 import loadOSMGraph from "./loadOSMGraph";
@@ -147,6 +148,21 @@ class Graph {
     };
 
     /**
+     * Searches for a node near the given coordinates that best matches the search string in its tags.
+     * @param location - Longitude and latitude coordinates
+     * @param searchString - String to search for in node tags
+     * @returns ID of the nearest node that matches the search string
+     * @throws If the graph is not loaded
+     */
+    searchNearestNode = (location: Location, searchString: string): number | null => {
+        if (this.graph === null) throw new Error("Graph is not loaded");
+
+        const [lon, lat] = location;
+
+        return searchNearestNodeRust(lon, lat, searchString, this.graph);
+    };
+
+    /**
      * Finds the nearest nodes to given coordinates.
      * @param location - Longitude and latitude coordinates
      * @param limit - Maximum number of nodes to return (default: 1)
@@ -154,12 +170,22 @@ class Graph {
      * @returns Array of IDs of the nearest nodes
      * @throws If the graph is not loaded
      */
-    getNearestNode = (location: Location, limit: number = 1, distanceThresholdMultiplier: number = 5.0) => {
+    getNearestNodes = (location: Location, limit: number = 1, distanceThresholdMultiplier: number = 5.0) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
         return findNearestNode(lon, lat, this.graph, limit, distanceThresholdMultiplier);
+    };
+
+    /**
+     * Finds the nearest node to given coordinates.
+     * @param location - Longitude and latitude coordinates
+     * @returns ID of the nearest node
+     * @throws If the graph is not loaded
+     */
+    getNearestNode = (location: Location) => {
+        return this.getNearestNodes(location)?.[0];
     };
 
     /**

@@ -68,6 +68,65 @@ impl Graph {
 
         Ok(result)
     }
+
+    pub fn find_nodes_by_tags_and_location(
+        &self,
+        lon: f64,
+        lat: f64,
+        search_string: &str,
+    ) -> Result<Option<(i64, f64)>> {
+        let nearest_nodes = self.find_nearest_ways_and_nodes(lon, lat, 25, 25.0)?;
+
+        if nearest_nodes.is_empty() {
+            return Ok(None);
+        }
+
+        let lowercase_search = search_string.to_lowercase();
+        let search_terms: Vec<&str> = lowercase_search.split_whitespace().collect();
+
+        if search_terms.is_empty() {
+            return Ok(Some((nearest_nodes[0], 0.0)));
+        }
+
+        let mut scored_nodes = Vec::new();
+        for &node_id in &nearest_nodes {
+            if let Some(node) = self.nodes.get(&node_id) {
+                let score = calculate_node_match_score(node, &search_terms);
+                if score > 0.0 {
+                    scored_nodes.push((node_id, score));
+                }
+            }
+        }
+
+        scored_nodes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        if scored_nodes.is_empty() {
+            return Ok(Some((nearest_nodes[0], 0.0)));
+        }
+
+        Ok(Some(scored_nodes[0]))
+    }
+}
+
+fn calculate_node_match_score(node: &Node, search_terms: &[&str]) -> f64 {
+    let mut total_score = 0.0;
+
+    for (_key, value) in &node.tags {
+        let lowercase_value = value.to_lowercase();
+
+        for &term in search_terms {
+            if lowercase_value == term {
+                total_score += 1.0;
+                continue;
+            }
+
+            if lowercase_value.contains(term) {
+                total_score += 0.5;
+            }
+        }
+    }
+
+    total_score
 }
 
 pub fn find_nearest_point_on_way(
