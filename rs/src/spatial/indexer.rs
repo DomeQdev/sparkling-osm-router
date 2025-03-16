@@ -46,6 +46,7 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
 
 fn build_routing_graph(graph: &Graph) -> RouteGraph {
     let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
+    let mut adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut turn_restrictions = Vec::new();
 
     crate::routing::thread_local_turn_restrictions_mut(|tr| {
@@ -110,18 +111,37 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
                     cost,
                 });
 
+            adjacency_list_reverse
+                .entry(to_node)
+                .or_default()
+                .push(RouteEdge {
+                    to_node: from_node,
+                    way_id,
+                    cost,
+                });
+
             if !is_oneway {
                 adjacency_list.entry(to_node).or_default().push(RouteEdge {
                     to_node: from_node,
                     way_id,
                     cost,
                 });
+
+                adjacency_list_reverse
+                    .entry(from_node)
+                    .or_default()
+                    .push(RouteEdge {
+                        to_node: to_node,
+                        way_id,
+                        cost,
+                    });
             }
         }
     }
 
     for node_id in graph.nodes.keys() {
         adjacency_list.entry(*node_id).or_default();
+        adjacency_list_reverse.entry(*node_id).or_default();
     }
 
     for relation in graph.relations.values() {
@@ -172,6 +192,7 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
 
     RouteGraph {
         adjacency_list,
+        adjacency_list_reverse,
         turn_restrictions,
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
         ways_map: FxHashMap::from_iter(graph.ways.clone()),

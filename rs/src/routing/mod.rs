@@ -52,6 +52,7 @@ pub struct RouteEdge {
 #[derive(Clone, Debug)]
 pub struct RouteGraph {
     pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
+    pub adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>>,
     pub turn_restrictions: Vec<TurnRestrictionData>,
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, Way>,

@@ -228,10 +228,9 @@ pub fn find_route_bidirectional_astar(
 
                 visited_nodes_backward.insert(visit_key, true);
 
-                if let Some(edges) = graph.adjacency_list.get(&current_node_id) {
+                if let Some(_edges) = graph.adjacency_list.get(&current_node_id) {
                     process_edges_reverse(
                         graph,
-                        edges,
                         current,
                         start_node,
                         &mut open_set_backward,
@@ -270,7 +269,6 @@ pub fn find_route_bidirectional_astar(
 
 fn process_edges_reverse(
     graph: &RouteGraph,
-    edges: &[crate::routing::RouteEdge],
     current: NodeWithPrevious,
     target_node: &Node,
     open_set: &mut BinaryHeap<NodeWithPrevious>,
@@ -278,40 +276,90 @@ fn process_edges_reverse(
     g_score: &mut FxHashMap<i64, i64>,
     current_g_score: i64,
 ) {
-    for edge in edges {
-        let to_node = edge.to_node;
+    if let Some(reverse_edges) = graph.adjacency_list_reverse.get(&current.node_id) {
+        for edge in reverse_edges {
+            let to_node = edge.to_node;
 
-        if !is_turn_allowed(
-            graph,
-            current.previous_way_id,
-            current.previous_node_id,
-            current.node_id,
-            edge.way_id,
-            to_node,
-        ) {
-            continue;
-        }
+            if !is_turn_allowed_reverse(
+                graph,
+                current.previous_way_id,
+                current.previous_node_id,
+                current.node_id,
+                edge.way_id,
+                to_node,
+            ) {
+                continue;
+            }
 
-        let edge_cost = calculate_edge_cost(graph, edge);
-        let tentative_g_score = current_g_score + edge_cost;
+            let edge_cost = calculate_edge_cost(graph, edge);
+            let tentative_g_score = current_g_score + edge_cost;
 
-        if tentative_g_score < *g_score.get(&to_node).unwrap_or(&i64::MAX) {
-            came_from.insert(to_node, (current.node_id, edge.way_id));
-            g_score.insert(to_node, tentative_g_score);
+            if tentative_g_score < *g_score.get(&to_node).unwrap_or(&i64::MAX) {
+                came_from.insert(to_node, (current.node_id, edge.way_id));
+                g_score.insert(to_node, tentative_g_score);
 
-            if let Some(node) = graph.nodes_map.get(&to_node) {
-                let h_cost = heuristic_cost(node, target_node);
+                if let Some(node) = graph.nodes_map.get(&to_node) {
+                    let h_cost = heuristic_cost(node, target_node);
 
-                open_set.push(NodeWithPrevious {
-                    node_id: to_node,
-                    previous_node_id: Some(current.node_id),
-                    previous_way_id: Some(edge.way_id),
-                    cost: tentative_g_score,
-                    estimated_total_cost: tentative_g_score + h_cost,
-                });
+                    open_set.push(NodeWithPrevious {
+                        node_id: to_node,
+                        previous_node_id: Some(current.node_id),
+                        previous_way_id: Some(edge.way_id),
+                        cost: tentative_g_score,
+                        estimated_total_cost: tentative_g_score + h_cost,
+                    });
+                }
             }
         }
     }
+}
+
+fn is_turn_allowed_reverse(
+    graph: &RouteGraph,
+    previous_way_id: Option<i64>,
+    _prev_prev_node_id: Option<i64>,
+    current_node_id: i64,
+    next_way_id: i64,
+    _next_node_id: i64,
+) -> bool {
+    if previous_way_id.is_none() {
+        return true;
+    }
+
+    let prev_way_id = previous_way_id.unwrap();
+
+    for restriction in &graph.turn_restrictions {
+        if restriction.via_node == current_node_id
+            && restriction.to_way == prev_way_id
+            && restriction.from_way == next_way_id
+        {
+            if restriction.restriction_type == TurnRestriction::Prohibitory {
+                return false;
+            }
+        }
+    }
+
+    let mandatory_restrictions: Vec<&TurnRestrictionData> = graph
+        .turn_restrictions
+        .iter()
+        .filter(|r| {
+            r.via_node == current_node_id
+                && r.to_way == prev_way_id
+                && r.restriction_type == TurnRestriction::Mandatory
+        })
+        .collect();
+
+    if !mandatory_restrictions.is_empty() {
+        for mandatory in &mandatory_restrictions {
+            if mandatory.from_way == next_way_id {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    true
 }
 
 fn reconstruct_path_forward(
