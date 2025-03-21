@@ -569,17 +569,12 @@ fn calculate_edge_cost(graph: &RouteGraph, edge: &crate::routing::RouteEdge) -> 
     base_cost
 }
 
-fn adjust_cost(base_cost: i64, penalty: i64) -> i64 {
-    if penalty == 0 {
+fn adjust_cost(base_cost: i64, penalty: f64) -> i64 {
+    if penalty == 0.0 {
         return i64::MAX / 2;
     }
 
-    let distance_component = (base_cost as f64 * 0.7) as i64;
-
-    let penalty_factor = ((penalty as f64).sqrt() / 3.16) as i64;
-    let penalty_component = (base_cost as f64 * 0.3 * (penalty_factor as f64 / 10.0)) as i64;
-
-    distance_component + penalty_component
+    base_cost * (penalty as i64)
 }
 
 fn is_turn_allowed(

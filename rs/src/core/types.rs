@@ -37,9 +37,9 @@ pub struct Relation {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProfilePenalties {
     #[serde(default)]
-    pub default: Option<i64>,
+    pub default: Option<f64>,
     #[serde(flatten)]
-    pub penalties: HashMap<String, i64>,
+    pub penalties: HashMap<String, f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

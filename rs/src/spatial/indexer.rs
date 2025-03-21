@@ -99,7 +99,7 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
 
                 (distance * 1000.0 * (base_cost as f64)).round() as i64
             } else {
-                base_cost * 1000
+                (base_cost * 1000.0) as i64
             };
 
             adjacency_list
