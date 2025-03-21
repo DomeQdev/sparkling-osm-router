@@ -546,21 +546,26 @@ fn process_edges_with_bearing(
 
 fn calculate_edge_cost(graph: &RouteGraph, edge: &crate::routing::RouteEdge) -> i64 {
     let base_cost = edge.cost;
+
     if graph.profile.is_none() || !graph.ways_map.contains_key(&edge.way_id) {
         return base_cost;
     }
+
     let profile = graph.profile.as_ref().unwrap();
     let way_id = edge.way_id;
+
     if let Some(way) = graph.ways_map.get(&way_id) {
         if let Some(tag_value) = way.tags.get(&profile.key) {
             if let Some(penalty) = profile.penalties.penalties.get(tag_value) {
                 return adjust_cost(base_cost, *penalty);
             }
         }
+
         if let Some(default_penalty) = profile.penalties.default {
             return adjust_cost(base_cost, default_penalty);
         }
     }
+
     base_cost
 }
 
@@ -568,7 +573,13 @@ fn adjust_cost(base_cost: i64, penalty: i64) -> i64 {
     if penalty == 0 {
         return i64::MAX / 2;
     }
-    base_cost * penalty / 10
+
+    let distance_component = (base_cost as f64 * 0.7) as i64;
+
+    let penalty_factor = ((penalty as f64).sqrt() / 3.16) as i64;
+    let penalty_component = (base_cost as f64 * 0.3 * (penalty_factor as f64 / 10.0)) as i64;
+
+    distance_component + penalty_component
 }
 
 fn is_turn_allowed(
