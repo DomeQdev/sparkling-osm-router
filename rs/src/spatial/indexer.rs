@@ -34,12 +34,12 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
     filter_graph(&mut graph);
     process_turn_restrictions(&mut graph);
 
-    graph.index_rtree()?;
-
     graph.route_graph = Some(build_routing_graph(&graph));
 
     update_graph_nodes(&graph);
     index_restricted_nodes(&graph);
+
+    graph.index_rtree()?;
 
     Ok(graph)
 }
@@ -205,7 +205,7 @@ fn filter_graph(graph: &mut Graph) {
     let vehicle_type = profile.vehicle_type.clone();
 
     graph.ways.retain(|_, way| {
-        if !way.tags.contains_key(&profile.key) {
+        if !way.tags.contains_key(&profile.key) && profile.penalties.default.is_none() {
             return false;
         }
 

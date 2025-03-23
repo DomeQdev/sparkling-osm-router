@@ -1,3 +1,4 @@
-import Graph, { Profile, GraphOptions, OSMGraphOptions, RouteResult, RouteQueue } from "./Graph";
+import Graph, { GraphOptions, OSMGraphOptions, RouteResult, RouteQueue } from "./Graph";
+import { Profile } from "./Graph/Profile";
 
-export { Graph, Profile, GraphOptions, OSMGraphOptions, RouteResult, RouteQueue };
+export { Graph, GraphOptions, OSMGraphOptions, Profile, RouteResult, RouteQueue };

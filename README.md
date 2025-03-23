@@ -17,15 +17,17 @@ import { Graph, Profile } from "sparkling-osm-router";
 const carProfile: Profile = {
     key: "highway",
     penalties: {
-        motorway: 1,
-        trunk: 1.1,
-        primary: 1.3,
-        secondary: 1.5,
-        tertiary: 1.7,
-        residential: 2.0,
-        default: 3.0,
+        [["motorway", "motorway_link"], 1],
+        [["primary", "primary_link"], 1],
+        [["secondary", "secondary_link"], 1.1],
+        [["tertiary", "tertiary_link"], 1.15],
+        ["unclassified", 1.25],
+        ["residential", 1.35],
+        ["living_street", 1.45],
+        ["service", 1.9],
+        ["default", 2],
     },
-    vehicle_type: "motorcar",
+    vehicleType: "motorcar",
 };
 
 // Create graph with OSM data configuration
@@ -117,29 +119,22 @@ Routing profiles allow you to customize how routes are calculated:
 const walkingProfile: Profile = {
     key: "highway",
     penalties: {
-        footway: 1,
-        path: 1,
-        pedestrian: 1,
-        steps: 1.5,
-        residential: 2,
-        living_street: 1.5,
-        default: 3.0,
+        [["footway", "path", "pedestrian"], 1],
+        [["steps", "residential", "living_street"], 1.5],
+        ["default", 3.0],
     },
-    vehicle_type: "foot",
+    vehicleType: "foot",
 };
 
 // Cycling profile example
 const cyclingProfile: Profile = {
     key: "highway",
     penalties: {
-        cycleway: 1,
-        path: 1.2,
-        residential: 1.5,
-        tertiary: 2,
-        primary: 3,
-        default: 4.0,
+        [["cycleway", "path", "footway"], 1],
+        [["steps", "residential", "living_street"], 1.5],
+        ["default", 2.0],
     },
-    vehicle_type: "bicycle",
+    vehicleType: "bicycle",
 };
 ```
 
@@ -182,7 +177,3 @@ For efficient batch processing of multiple routes.
 -   Use route queues for batch processing
 -   Limit your OSM data area to only what's needed
 -   Set appropriate TTL values for caching OSM data
-
-## License
-
-MIT

@@ -17,34 +17,10 @@ import {
     simplifyShape as simplifyShapeRust,
 } from "../RustModules";
 import loadOSMGraph from "./loadOSMGraph";
+import { convertProfileFormat, Profile } from "./Profile";
 import { RouteQueue } from "./RouteQueue";
 
 export type Location = [number, number];
-
-/**
- * Configuration for a routing profile.
- */
-export type Profile = {
-    /**
-     * The OSM tag key to consider for routing (e.g., "highway").
-     * See https://wiki.openstreetmap.org/wiki/Tags#Keys_and_values
-     */
-    key: string;
-
-    /**
-     * Map of penalties for different OSM tag values (e.g., {"motorway": 1, "residential": 3}),
-     * including an optional default value for tags not explicitly specified.
-     * If default is not provided, routing will occur ONLY on ways with explicitly specified tags.
-     */
-    penalties: Partial<Record<string | "default", number>>;
-
-    /**
-     * The type of vehicle used for routing, which affects access restrictions and turn restrictions.
-     * Possible values: "foot", "bicycle", "motorcar", "motorcycle", "psv", "train", "subway", "tram"
-     * If not provided, no vehicle-specific filtering will be applied.
-     */
-    vehicle_type?: "foot" | "bicycle" | "motorcar" | "motorcycle" | "psv" | "train" | "subway" | "tram";
-};
 
 /**
  * Configuration options for the routing graph.
@@ -130,7 +106,7 @@ class Graph {
 
         this.graph = createGraphStore();
 
-        loadAndIndexGraph(this.options.osmGraph.path, this.graph, JSON.stringify(this.options.profile));
+        loadAndIndexGraph(this.options.osmGraph.path, this.graph, convertProfileFormat(this.options.profile));
     };
 
     /**

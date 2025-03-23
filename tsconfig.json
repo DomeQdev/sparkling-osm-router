@@ -16,5 +16,5 @@
         "strictPropertyInitialization": false,
         "moduleResolution": "node"
     },
-    "include": ["src/**/*", "src/index.d.ts"]
+    "include": ["src/**/*"]
 }
