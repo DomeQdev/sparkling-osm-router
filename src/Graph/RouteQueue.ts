@@ -36,7 +36,7 @@ export interface RouteQueueOptions {
  * The queue is processed entirely in Rust for maximum performance.
  */
 export class RouteQueue {
-    private queueId: number;
+    queueId: number;
     private enableProgressBar: boolean;
     private processing: boolean = false;
 

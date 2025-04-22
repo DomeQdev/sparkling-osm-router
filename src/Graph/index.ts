@@ -5,6 +5,7 @@
  */
 import {
     cleanupGraphStore,
+    cleanupRouteQueue,
     createGraphStore,
     findNearestNode,
     getNode,
@@ -88,6 +89,7 @@ class Graph {
 
     private options: GraphOptions;
     private graph: number | null = null;
+    private queueIds: number[] = [];
 
     /**
      * Creates a new Graph instance.
@@ -227,15 +229,6 @@ class Graph {
     };
 
     /**
-     * Cleans up the graph resources and resets the graph state.
-     * @returns Result of the cleanup operation
-     */
-    cleanup = (): boolean => {
-        this.graph = null;
-        return cleanupGraphStore();
-    };
-
-    /**
      * Creates a new route queue associated with this graph.
      * The graph must be loaded first.
      * @param enableProgessBar Whether to enable progress bar for route calculations
@@ -246,8 +239,25 @@ class Graph {
     createRouteQueue(enableProgessBar: boolean = true, maxConcurrency?: number): RouteQueue {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
-        return new RouteQueue(this.graph, enableProgessBar, maxConcurrency);
+        const queue = new RouteQueue(this.graph, enableProgessBar, maxConcurrency);
+        this.queueIds.push(queue.queueId);
+
+        return queue;
     }
+
+    /**
+     * Cleans up the graph resources and resets the graph state.
+     * @returns Result of the cleanup operation
+     */
+    cleanup = (): boolean => {
+        this.graph = null;
+
+        for (const queueId of this.queueIds) {
+            cleanupRouteQueue(queueId);
+        }
+
+        return cleanupGraphStore();
+    };
 }
 
 export default Graph;
