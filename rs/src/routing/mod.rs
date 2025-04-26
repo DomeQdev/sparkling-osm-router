@@ -80,8 +80,8 @@ impl Graph {
         end_node_id: i64,
         initial_bearing: Option<f64>,
     ) -> Result<Option<RouteResult>> {
-        let routing_graph = match &self.route_graph {
-            Some(graph) => graph.clone(),
+        let routing_graph_arc = match &self.route_graph {
+            Some(graph_arc) => graph_arc.clone(), // Clone the Arc, not the RouteGraph
             None => {
                 return Err(GraphError::InvalidOsmData(
                     "Routing graph not built".to_string(),
@@ -111,7 +111,7 @@ impl Graph {
 
         let route_future = tokio::task::spawn_blocking(move || {
             find_route_bidirectional_astar(
-                &routing_graph,
+                &routing_graph_arc,
                 start_node_id,
                 end_node_id,
                 initial_bearing,

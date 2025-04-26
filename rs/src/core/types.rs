@@ -4,6 +4,7 @@ use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Node {
@@ -60,7 +61,7 @@ pub struct Graph {
     #[serde(skip)]
     pub profile: Option<Profile>,
     #[serde(skip)]
-    pub route_graph: Option<RouteGraph>,
+    pub route_graph: Option<Arc<RouteGraph>>,
 }
 
 impl Finalize for Graph {}

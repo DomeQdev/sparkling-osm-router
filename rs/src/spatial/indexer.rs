@@ -5,6 +5,7 @@ use rstar::{RTree, AABB};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 thread_local! {
     pub static GRAPH_NODES: RefCell<HashMap<i64, Node>> = RefCell::new(HashMap::new());
@@ -34,7 +35,7 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
     filter_graph(&mut graph);
     process_turn_restrictions(&mut graph);
 
-    graph.route_graph = Some(build_routing_graph(&graph));
+    graph.route_graph = Some(Arc::new(build_routing_graph(&graph)));
 
     update_graph_nodes(&graph);
     index_restricted_nodes(&graph);
