@@ -1,6 +1,6 @@
 use crate::core::errors::{GraphError, Result};
 use crate::core::types::Node;
-use crate::routing::{RouteGraph, RouteResult, TurnRestriction, TurnRestrictionData};
+use crate::routing::{RouteGraph, RouteResult};
 use crate::spatial::geometry::{bearing_difference, calculate_bearing, haversine_distance};
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
@@ -328,35 +328,41 @@ fn is_turn_allowed_reverse(
 
     let prev_way_id = previous_way_id.unwrap();
 
-    for restriction in &graph.turn_restrictions {
-        if restriction.via_node == current_node_id
-            && restriction.to_way == prev_way_id
-            && restriction.from_way == next_way_id
-        {
-            if restriction.restriction_type == TurnRestriction::Prohibitory {
-                return false;
-            }
-        }
+    // Check prohibitory restrictions (no_*)
+    if graph.prohibitory_restrictions.contains_key(&(next_way_id, current_node_id, prev_way_id)) {
+        return false;
     }
 
-    let mandatory_restrictions: Vec<&TurnRestrictionData> = graph
-        .turn_restrictions
-        .iter()
-        .filter(|r| {
-            r.via_node == current_node_id
-                && r.to_way == prev_way_id
-                && r.restriction_type == TurnRestriction::Mandatory
-        })
-        .collect();
+    // Check mandatory restrictions (only_*)
+    if let Some(allowed_from_ways) = graph.mandatory_to_via.get(&(prev_way_id, current_node_id)) {
+        return allowed_from_ways.contains(&next_way_id);
+    }
 
-    if !mandatory_restrictions.is_empty() {
-        for mandatory in &mandatory_restrictions {
-            if mandatory.from_way == next_way_id {
-                return true;
-            }
-        }
+    true
+}
 
+fn is_turn_allowed(
+    graph: &RouteGraph,
+    previous_way_id: Option<i64>,
+    _prev_prev_node_id: Option<i64>,
+    current_node_id: i64,
+    next_way_id: i64,
+    _next_node_id: i64,
+) -> bool {
+    if previous_way_id.is_none() {
+        return true;
+    }
+
+    let prev_way_id = previous_way_id.unwrap();
+
+    // Check prohibitory restrictions (no_*)
+    if graph.prohibitory_restrictions.contains_key(&(prev_way_id, current_node_id, next_way_id)) {
         return false;
+    }
+
+    // Check mandatory restrictions (only_*)
+    if let Some(allowed_to_ways) = graph.mandatory_from_via.get(&(prev_way_id, current_node_id)) {
+        return allowed_to_ways.contains(&next_way_id);
     }
 
     true
@@ -575,52 +581,4 @@ fn adjust_cost(base_cost: i64, penalty: f64) -> i64 {
     }
 
     base_cost * (penalty as i64)
-}
-
-fn is_turn_allowed(
-    graph: &RouteGraph,
-    previous_way_id: Option<i64>,
-    _prev_prev_node_id: Option<i64>,
-    current_node_id: i64,
-    next_way_id: i64,
-    _next_node_id: i64,
-) -> bool {
-    if previous_way_id.is_none() {
-        return true;
-    }
-
-    let prev_way_id = previous_way_id.unwrap();
-
-    for restriction in &graph.turn_restrictions {
-        if restriction.via_node == current_node_id
-            && restriction.from_way == prev_way_id
-            && restriction.to_way == next_way_id
-        {
-            if restriction.restriction_type == TurnRestriction::Prohibitory {
-                return false;
-            }
-        }
-    }
-
-    let mandatory_restrictions: Vec<&TurnRestrictionData> = graph
-        .turn_restrictions
-        .iter()
-        .filter(|r| {
-            r.via_node == current_node_id
-                && r.from_way == prev_way_id
-                && r.restriction_type == TurnRestriction::Mandatory
-        })
-        .collect();
-
-    if !mandatory_restrictions.is_empty() {
-        for mandatory in &mandatory_restrictions {
-            if mandatory.to_way == next_way_id {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    true
 }

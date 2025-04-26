@@ -53,7 +53,9 @@ pub struct RouteEdge {
 pub struct RouteGraph {
     pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
     pub adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>>,
-    pub turn_restrictions: Vec<TurnRestrictionData>,
+    pub prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool>, // (from_way, via_node, to_way) -> is_restricted
+    pub mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>>,       // (from_way, via_node) -> [allowed_to_ways]
+    pub mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>>,         // (to_way, via_node) -> [allowed_from_ways]
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, Way>,
     pub profile: Option<Profile>,

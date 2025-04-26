@@ -16,7 +16,7 @@ import { Graph, Profile } from "sparkling-osm-router";
 // Define a car routing profile
 const carProfile: Profile = {
     key: "highway",
-    penalties: {
+    penalties: [
         [["motorway", "motorway_link"], 1],
         [["primary", "primary_link"], 1],
         [["secondary", "secondary_link"], 1.1],
@@ -26,19 +26,22 @@ const carProfile: Profile = {
         ["living_street", 1.45],
         ["service", 1.9],
         ["default", 2],
-    },
+    ],
     vehicleType: "motorcar",
 };
 
 // Create graph with OSM data configuration
 const graph = new Graph({
     osmGraph: {
-        path: "./map-data/berlin.osm.pbf",
+        path: "./warsaw.xml",
         ttl: 24, // Cache time in hours
         bounds: [
-            [13.3, 52.4],
-            [13.5, 52.6],
-        ], // Berlin area
+            [20.937068124004156, 52.268865099859624],
+            [20.937068124004156, 52.203360264668476],
+            [21.07971485512246, 52.203360264668476],
+            [21.07971485512246, 52.268865099859624],
+            [20.937068124004156, 52.268865099859624],
+        ],
         overpassQuery: `way["highway"~"^(motorway|motorway_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|service)$"]`,
     },
     profile: carProfile,
@@ -48,15 +51,15 @@ const graph = new Graph({
 await graph.loadGraph();
 
 // Find nodes near specific coordinates
-const startNodeId = graph.getNearestNode([13.385, 52.516]); // Brandenburg Gate
-const endNodeId = graph.getNearestNode([13.428, 52.523]); // Alexanderplatz
+const startNodeId = graph.getNearestNode([21.028975, 52.242113]);
+const endNodeId = graph.getNearestNode([20.99829, 52.251037]);
 
 // Calculate route
 const route = await graph.getRoute(startNodeId, endNodeId);
 console.log(`Route found with ${route.nodes.length} nodes via ${route.ways.length} ways`);
 
 // Get the route shape as coordinates
-const shape = graph.getShape({ nodes: route.nodes });
+const shape = graph.getShape(route);
 
 // Cleanup when done
 graph.cleanup();
@@ -118,22 +121,22 @@ Routing profiles allow you to customize how routes are calculated:
 // Walking profile example
 const walkingProfile: Profile = {
     key: "highway",
-    penalties: {
+    penalties: [
         [["footway", "path", "pedestrian"], 1],
         [["steps", "residential", "living_street"], 1.5],
         ["default", 3.0],
-    },
+    ],
     vehicleType: "foot",
 };
 
 // Cycling profile example
 const cyclingProfile: Profile = {
     key: "highway",
-    penalties: {
+    penalties: [
         [["cycleway", "path", "footway"], 1],
         [["steps", "residential", "living_street"], 1.5],
         ["default", 2.0],
-    },
+    ],
     vehicleType: "bicycle",
 };
 ```

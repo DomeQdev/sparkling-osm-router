@@ -48,10 +48,40 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
     let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut turn_restrictions = Vec::new();
+    
+    // Initialize the optimized lookup structures
+    let mut prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool> = FxHashMap::default();
+    let mut mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
+    let mut mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
 
     crate::routing::thread_local_turn_restrictions_mut(|tr| {
         turn_restrictions = tr.clone();
     });
+
+    // Pre-process turn restrictions into lookup structures
+    for restriction in &turn_restrictions {
+        let from_way = restriction.from_way;
+        let via_node = restriction.via_node;
+        let to_way = restriction.to_way;
+        
+        match restriction.restriction_type {
+            TurnRestriction::Prohibitory => {
+                prohibitory_restrictions.insert((from_way, via_node, to_way), true);
+            },
+            TurnRestriction::Mandatory => {
+                mandatory_from_via
+                    .entry((from_way, via_node))
+                    .or_insert_with(Vec::new)
+                    .push(to_way);
+                
+                mandatory_to_via
+                    .entry((to_way, via_node))
+                    .or_insert_with(Vec::new)
+                    .push(from_way);
+            },
+            _ => {}
+        }
+    }
 
     for way in graph.ways.values() {
         let is_roundabout = way
@@ -193,7 +223,9 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
     RouteGraph {
         adjacency_list,
         adjacency_list_reverse,
-        turn_restrictions,
+        prohibitory_restrictions,
+        mandatory_from_via,
+        mandatory_to_via,
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
         ways_map: FxHashMap::from_iter(graph.ways.clone()),
         profile: graph.profile.clone(),
