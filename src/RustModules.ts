@@ -33,8 +33,14 @@ export const findNearestNode: (
     distanceThresholdMultiplier?: number
 ) => number[] = binding.findNearestNode;
 
-export const searchNearestNode: (lon: number, lat: number, searchString: string, graphId: number) => number =
-    binding.searchNearestNode;
+export const searchNearestNode: (
+    lon: number,
+    lat: number,
+    searchString: string,
+    searchLimit: number,
+    distanceThresholdMultiplier: number,
+    graphId: number
+) => number = binding.searchNearestNode;
 
 export const route: (
     startNode: number,

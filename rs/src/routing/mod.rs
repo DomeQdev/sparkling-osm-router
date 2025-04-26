@@ -81,7 +81,7 @@ impl Graph {
         initial_bearing: Option<f64>,
     ) -> Result<Option<RouteResult>> {
         let routing_graph_arc = match &self.route_graph {
-            Some(graph_arc) => graph_arc.clone(), // Clone the Arc, not the RouteGraph
+            Some(graph_arc) => graph_arc.clone(),
             None => {
                 return Err(GraphError::InvalidOsmData(
                     "Routing graph not built".to_string(),

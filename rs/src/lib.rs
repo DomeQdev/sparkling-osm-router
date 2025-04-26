@@ -608,22 +608,27 @@ fn cleanup_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 
     Ok(cx.boolean(true))
 }
+
 fn search_nearest_node_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
     let lon = cx.argument::<JsNumber>(0)?.value(&mut cx);
     let lat = cx.argument::<JsNumber>(1)?.value(&mut cx);
     let search_string = cx.argument::<JsString>(2)?.value(&mut cx);
-    let graph_id = cx.argument::<JsNumber>(3)?.value(&mut cx) as i32;
+    let search_limit = cx.argument::<JsNumber>(3)?.value(&mut cx) as usize;
+    let distance_threshold_multiplier = cx.argument::<JsNumber>(4)?.value(&mut cx) as f64;
+    let graph_id = cx.argument::<JsNumber>(5)?.value(&mut cx) as i32;
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(graph) => graph.clone(),
         None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
     };
 
-    let search_result =
-        graph_store
-            .read()
-            .unwrap()
-            .find_nodes_by_tags_and_location(lon, lat, &search_string);
+    let search_result = graph_store.read().unwrap().find_nodes_by_tags_and_location(
+        lon,
+        lat,
+        &search_string,
+        search_limit,
+        distance_threshold_multiplier,
+    );
 
     match search_result {
         Ok(Some((node_id, _))) => {

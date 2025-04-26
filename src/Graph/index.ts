@@ -129,15 +129,17 @@ class Graph {
      * Searches for a node near the given coordinates that best matches the search string in its tags.
      * @param location - Longitude and latitude coordinates
      * @param searchString - String to search for in node tags
+     * @param searchLimit - Maximum number of nodes to search (default: 25)
+     * @param distanceThresholdMultiplier - Multiplier for distance threshold (default: 25.0)
      * @returns ID of the nearest node that matches the search string
      * @throws If the graph is not loaded
      */
-    searchNearestNode = (location: Location, searchString: string): number | null => {
+    searchNearestNode = (location: Location, searchString: string, searchLimit: number = 25, distanceThresholdMultiplier: number = 25.0) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
-        return searchNearestNodeRust(lon, lat, searchString, this.graph);
+        return searchNearestNodeRust(lon, lat, searchString, searchLimit, distanceThresholdMultiplier, this.graph);
     };
 
     /**

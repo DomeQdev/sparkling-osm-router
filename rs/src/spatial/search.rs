@@ -74,8 +74,10 @@ impl Graph {
         lon: f64,
         lat: f64,
         search_string: &str,
+        search_limit: usize,
+        distance_threshold_multiplier: f64,
     ) -> Result<Option<(i64, f64)>> {
-        let nearest_nodes = self.find_nearest_ways_and_nodes(lon, lat, 25, 25.0)?;
+        let nearest_nodes = self.find_nearest_ways_and_nodes(lon, lat, search_limit, distance_threshold_multiplier)?;
 
         if nearest_nodes.is_empty() {
             return Ok(None);

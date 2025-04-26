@@ -50,7 +50,6 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
     let mut adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut turn_restrictions = Vec::new();
     
-    // Initialize the optimized lookup structures
     let mut prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool> = FxHashMap::default();
     let mut mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
     let mut mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
@@ -59,7 +58,6 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         turn_restrictions = tr.clone();
     });
 
-    // Pre-process turn restrictions into lookup structures
     for restriction in &turn_restrictions {
         let from_way = restriction.from_way;
         let via_node = restriction.via_node;
