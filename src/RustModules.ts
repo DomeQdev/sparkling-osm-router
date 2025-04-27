@@ -30,15 +30,14 @@ export const findNearestNode: (
     lat: number,
     graphId: number,
     limit?: number,
-    distanceThresholdMultiplier?: number
+    maxDistance?: number
 ) => number[] = binding.findNearestNode;
 
 export const searchNearestNode: (
     lon: number,
     lat: number,
     searchString: string,
-    searchLimit: number,
-    distanceThresholdMultiplier: number,
+    maxDistance: number,
     graphId: number
 ) => number = binding.searchNearestNode;
 

@@ -129,33 +129,36 @@ class Graph {
      * Searches for a node near the given coordinates that best matches the search string in its tags.
      * @param location - Longitude and latitude coordinates
      * @param searchString - String to search for in node tags
-     * @param searchLimit - Maximum number of nodes to search (default: 25)
-     * @param distanceThresholdMultiplier - Multiplier for distance threshold (default: 25.0)
+     * @param maxDistance - Maximum distance in meters for the search (default: 25)
      * @returns ID of the nearest node that matches the search string
      * @throws If the graph is not loaded
      */
-    searchNearestNode = (location: Location, searchString: string, searchLimit: number = 25, distanceThresholdMultiplier: number = 25.0) => {
+    searchNearestNode = (
+        location: Location,
+        searchString: string,
+        maxDistance: number = 25
+    ) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
-        return searchNearestNodeRust(lon, lat, searchString, searchLimit, distanceThresholdMultiplier, this.graph);
+        return searchNearestNodeRust(lon, lat, searchString, maxDistance, this.graph);
     };
 
     /**
      * Finds the nearest nodes to given coordinates.
      * @param location - Longitude and latitude coordinates
      * @param limit - Maximum number of nodes to return (default: 1)
-     * @param distanceThresholdMultiplier - Multiplier for distance threshold when selecting multiple nodes (default: 5.0)
+     * @param maxDistance - Maximum distance in meters for the search (default: 25)
      * @returns Array of IDs of the nearest nodes
      * @throws If the graph is not loaded
      */
-    getNearestNodes = (location: Location, limit: number = 1, distanceThresholdMultiplier: number = 5.0) => {
+    getNearestNodes = (location: Location, limit: number = 1, maxDistance: number = 25) => {
         if (this.graph === null) throw new Error("Graph is not loaded");
 
         const [lon, lat] = location;
 
-        return findNearestNode(lon, lat, this.graph, limit, distanceThresholdMultiplier);
+        return findNearestNode(lon, lat, this.graph, limit, maxDistance);
     };
 
     /**

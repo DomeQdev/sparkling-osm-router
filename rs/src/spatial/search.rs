@@ -1,7 +1,6 @@
 use crate::core::errors::Result;
 use crate::core::types::{Graph, Node, Way};
 use crate::spatial::geometry::{point_to_segment_distance, squared_distance};
-use crate::spatial::indexer::RESTRICTED_NODES;
 use std::collections::HashMap;
 
 impl Graph {
@@ -10,7 +9,7 @@ impl Graph {
         lon: f64,
         lat: f64,
         limit: usize,
-        distance_threshold_multiplier: f64,
+        max_distance: f64,
     ) -> Result<Vec<i64>> {
         let query_point: [f64; 2] = [lon, lat];
         let actual_limit = limit.max(1);
@@ -26,16 +25,7 @@ impl Graph {
             if let Some((node_id, distance)) =
                 find_nearest_point_on_way(&self.ways, &self.nodes, way_id, query_point)
             {
-                if !has_mandatory_restriction_conflicts_indexed(node_id) {
-                    candidates.push((node_id, distance, way_id));
-                    continue;
-                }
-
-                if let Some(alternative_node_id) =
-                    find_alternative_node_on_way_indexed(&self.ways, way_id, node_id)
-                {
-                    candidates.push((alternative_node_id, distance, way_id));
-                }
+                candidates.push((node_id, distance));
             }
         }
 
@@ -43,13 +33,9 @@ impl Graph {
             .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if candidates.len() > 1 && actual_limit > 1 {
-            let closest_node_distance = candidates[0].1;
-
-            let distance_threshold = closest_node_distance * distance_threshold_multiplier;
-
             let mut valid_count = 0;
             for i in 0..candidates.len() {
-                if candidates[i].1 <= distance_threshold {
+                if candidates[i].1 <= max_distance {
                     if i != valid_count {
                         candidates.swap(i, valid_count);
                     }
@@ -74,12 +60,35 @@ impl Graph {
         lon: f64,
         lat: f64,
         search_string: &str,
-        search_limit: usize,
-        distance_threshold_multiplier: f64,
+        max_distance: f64,
     ) -> Result<Option<(i64, f64)>> {
-        let nearest_nodes = self.find_nearest_ways_and_nodes(lon, lat, search_limit, distance_threshold_multiplier)?;
+        let query_point: [f64; 2] = [lon, lat];
 
-        if nearest_nodes.is_empty() {
+        let mut candidate_ways = Vec::with_capacity(100);
+        for way_envelope in self.way_rtree.nearest_neighbor_iter(&query_point).take(100) {
+            candidate_ways.push(way_envelope.way_id);
+        }
+
+        let mut candidates = Vec::new();
+        for way_id in candidate_ways {
+            if let Some(way) = self.ways.get(&way_id) {
+                for &node_id in &way.node_refs {
+                    if let Some(node) = self.nodes.get(&node_id) {
+                        let node_point: [f64; 2] = [node.lon, node.lat];
+                        let distance = squared_distance(&query_point, &node_point).sqrt();
+
+                        if distance <= max_distance {
+                            candidates.push((node_id, distance));
+                        }
+                    }
+                }
+            }
+        }
+
+        candidates.sort_unstable_by_key(|&(id, _)| id);
+        candidates.dedup_by_key(|&mut (id, _)| id);
+
+        if candidates.is_empty() {
             return Ok(None);
         }
 
@@ -87,26 +96,36 @@ impl Graph {
         let search_terms: Vec<&str> = lowercase_search.split_whitespace().collect();
 
         if search_terms.is_empty() {
-            return Ok(Some((nearest_nodes[0], 0.0)));
+            candidates.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            return Ok(Some((candidates[0].0, candidates[0].1)));
         }
 
         let mut scored_nodes = Vec::new();
-        for &node_id in &nearest_nodes {
+        for &(node_id, distance) in &candidates {
             if let Some(node) = self.nodes.get(&node_id) {
                 let score = calculate_node_match_score(node, &search_terms);
                 if score > 0.0 {
-                    scored_nodes.push((node_id, score));
+                    scored_nodes.push((node_id, score, distance));
                 }
             }
         }
 
-        scored_nodes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
         if scored_nodes.is_empty() {
-            return Ok(Some((nearest_nodes[0], 0.0)));
+            candidates.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            return Ok(Some((candidates[0].0, candidates[0].1)));
         }
 
-        Ok(Some(scored_nodes[0]))
+        scored_nodes.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        Ok(Some((scored_nodes[0].0, scored_nodes[0].2)))
     }
 }
 
@@ -188,25 +207,4 @@ pub fn find_nearest_point_on_way(
     }
 
     nearest_node_id.map(|id| (id, min_distance))
-}
-
-fn has_mandatory_restriction_conflicts_indexed(node_id: i64) -> bool {
-    RESTRICTED_NODES.with(|restricted| restricted.borrow().contains(&node_id))
-}
-
-fn find_alternative_node_on_way_indexed(
-    ways: &HashMap<i64, Way>,
-    way_id: i64,
-    problematic_node_id: i64,
-) -> Option<i64> {
-    if let Some(way) = ways.get(&way_id) {
-        for node_ref in &way.node_refs {
-            if *node_ref != problematic_node_id
-                && !has_mandatory_restriction_conflicts_indexed(*node_ref)
-            {
-                return Some(*node_ref);
-            }
-        }
-    }
-    None
 }

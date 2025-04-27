@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 thread_local! {
     pub static GRAPH_NODES: RefCell<HashMap<i64, Node>> = RefCell::new(HashMap::new());
-    pub static RESTRICTED_NODES: RefCell<HashSet<i64>> = RefCell::new(HashSet::new());
 }
 
 impl Graph {
@@ -38,7 +37,6 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
     graph.route_graph = Some(Arc::new(build_routing_graph(&graph)));
 
     update_graph_nodes(&graph);
-    index_restricted_nodes(&graph);
 
     graph.index_rtree()?;
 
@@ -49,7 +47,7 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
     let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut turn_restrictions = Vec::new();
-    
+
     let mut prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool> = FxHashMap::default();
     let mut mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
     let mut mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
@@ -62,22 +60,22 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         let from_way = restriction.from_way;
         let via_node = restriction.via_node;
         let to_way = restriction.to_way;
-        
+
         match restriction.restriction_type {
             TurnRestriction::Prohibitory => {
                 prohibitory_restrictions.insert((from_way, via_node, to_way), true);
-            },
+            }
             TurnRestriction::Mandatory => {
                 mandatory_from_via
                     .entry((from_way, via_node))
                     .or_insert_with(Vec::new)
                     .push(to_way);
-                
+
                 mandatory_to_via
                     .entry((to_way, via_node))
                     .or_insert_with(Vec::new)
                     .push(from_way);
-            },
+            }
             _ => {}
         }
     }
@@ -459,8 +457,6 @@ fn process_single_restriction(
     if let (Some(from_id), Some(via_id), Some(to_id)) = (from_way_id, via_node_id, to_way_id) {
         if let Some(ways_at_node) = node_to_ways.get(&via_id) {
             if ways_at_node.contains(&from_id) && ways_at_node.contains(&to_id) {
-                if !RESTRICTED_NODES.with(|nodes| nodes.borrow_mut().insert(via_id)) {}
-
                 crate::routing::thread_local_turn_restrictions_mut(|tr| {
                     tr.push(crate::routing::TurnRestrictionData {
                         restriction_type,
@@ -514,34 +510,5 @@ fn update_graph_nodes(graph: &Graph) {
     GRAPH_NODES.with(|nodes| {
         let mut nodes_ref = nodes.borrow_mut();
         *nodes_ref = graph.nodes.clone();
-    });
-}
-
-fn index_restricted_nodes(graph: &Graph) {
-    let mut restricted: HashSet<i64> = HashSet::new();
-
-    for relation in graph.relations.values() {
-        if relation
-            .tags
-            .get("type")
-            .map_or(false, |t| t == "restriction")
-        {
-            if relation
-                .tags
-                .get("restriction")
-                .map_or(false, |r| r.starts_with("only_"))
-            {
-                for member in &relation.members {
-                    if member.role == "via" && member.member_type == "node" {
-                        restricted.insert(member.ref_id);
-                    }
-                }
-            }
-        }
-    }
-
-    RESTRICTED_NODES.with(|nodes| {
-        let mut nodes_ref = nodes.borrow_mut();
-        *nodes_ref = restricted.clone();
     });
 }
