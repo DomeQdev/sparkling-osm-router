@@ -238,12 +238,6 @@ fn filter_graph(graph: &mut Graph) {
             return false;
         }
 
-        if way.tags.get("highway").map_or(false, |h| h == "service")
-            && way.tags.contains_key("service")
-        {
-            return false;
-        }
-
         if vehicle_type.is_none() {
             return true;
         }
