@@ -27,7 +27,9 @@ const carProfile: Profile = {
         ["service", 1.9],
         ["default", 2],
     ],
-    vehicleType: "motorcar",
+    accessTags: ["motorcar", "motor_vehicle", "vehicle"], // Prioritized list of tags to check for access
+    onewayTags: ["oneway:vehicle"], // Prioritized list of tags for oneway status
+    exceptTags: ["psv"], // list of tags on restriction relations to ignore them
 };
 
 // Create graph with OSM data configuration
@@ -115,7 +117,7 @@ const leftOffset = graph.offsetShape(shape, 5, -1); // 5 meters to the left
 
 ## Routing Profiles
 
-Routing profiles allow you to customize how routes are calculated:
+Routing profiles allow you to customize how routes are calculated. You define penalties for different road types and specify tags that control access, one-way behavior, and exceptions to turn restrictions.
 
 ```typescript
 // Walking profile example
@@ -126,18 +128,22 @@ const walkingProfile: Profile = {
         [["steps", "residential", "living_street"], 1.5],
         ["default", 3.0],
     ],
-    vehicleType: "foot",
+    accessTags: ["foot", "pedestrian"], // Check foot, then pedestrian tags for access
+    onewayTags: ["oneway:foot"], // Check oneway, then oneway:foot
+    // exceptTags: [], // No specific exceptions for turn restrictions for this profile
 };
 
 // Cycling profile example
 const cyclingProfile: Profile = {
     key: "highway",
     penalties: [
-        [["cycleway", "path", "footway"], 1],
+        [["cycleway", "path", "footway"], 1], // footway might be shared
         [["steps", "residential", "living_street"], 1.5],
         ["default", 2.0],
     ],
-    vehicleType: "bicycle",
+    accessTags: ["bicycle", "vehicle"], // Check bicycle, then general vehicle access
+    onewayTags: ["oneway:bicycle", "cycleway"], // cycleway often implies oneway
+    exceptTags: ["delivery"], // ignore turn restrictions with "except=delivery"
 };
 ```
 

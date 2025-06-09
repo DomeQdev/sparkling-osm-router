@@ -326,16 +326,52 @@ fn is_turn_allowed_reverse(
         return true;
     }
 
-    let prev_way_id = previous_way_id.unwrap();
+    let prev_way_id_unwrapped = previous_way_id.unwrap();
 
-    // Check prohibitory restrictions (no_*)
-    if graph.prohibitory_restrictions.contains_key(&(next_way_id, current_node_id, prev_way_id)) {
+    if let Some(restriction_detail) =
+        graph
+            .prohibitory_restrictions
+            .get(&(next_way_id, current_node_id, prev_way_id_unwrapped))
+    {
+        if let Some(profile_except_tags) =
+            graph.profile.as_ref().and_then(|p| p.except_tags.as_ref())
+        {
+            if let Some(restriction_except_tags) = &restriction_detail.except_tags {
+                if profile_except_tags
+                    .iter()
+                    .any(|pet| restriction_except_tags.contains(pet))
+                {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
-    // Check mandatory restrictions (only_*)
-    if let Some(allowed_from_ways) = graph.mandatory_to_via.get(&(prev_way_id, current_node_id)) {
-        return allowed_from_ways.contains(&next_way_id);
+    if let Some(mandatory_turns) = graph
+        .mandatory_to_via
+        .get(&(prev_way_id_unwrapped, current_node_id))
+    {
+        let mut allowed_by_mandatory = false;
+        for mandatory_turn in mandatory_turns {
+            if mandatory_turn.target_way_id == next_way_id {
+                if let Some(profile_except_tags) =
+                    graph.profile.as_ref().and_then(|p| p.except_tags.as_ref())
+                {
+                    if let Some(restriction_except_tags) = &mandatory_turn.except_tags {
+                        if profile_except_tags
+                            .iter()
+                            .any(|pet| restriction_except_tags.contains(pet))
+                        {
+                            continue;
+                        }
+                    }
+                }
+                allowed_by_mandatory = true;
+                break;
+            }
+        }
+        return allowed_by_mandatory;
     }
 
     true
@@ -353,16 +389,53 @@ fn is_turn_allowed(
         return true;
     }
 
-    let prev_way_id = previous_way_id.unwrap();
+    let prev_way_id_unwrapped = previous_way_id.unwrap();
 
-    // Check prohibitory restrictions (no_*)
-    if graph.prohibitory_restrictions.contains_key(&(prev_way_id, current_node_id, next_way_id)) {
+    if let Some(restriction_detail) =
+        graph
+            .prohibitory_restrictions
+            .get(&(prev_way_id_unwrapped, current_node_id, next_way_id))
+    {
+        if let Some(profile_except_tags) =
+            graph.profile.as_ref().and_then(|p| p.except_tags.as_ref())
+        {
+            if let Some(restriction_except_tags) = &restriction_detail.except_tags {
+                if profile_except_tags
+                    .iter()
+                    .any(|pet| restriction_except_tags.contains(pet))
+                {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
-    // Check mandatory restrictions (only_*)
-    if let Some(allowed_to_ways) = graph.mandatory_from_via.get(&(prev_way_id, current_node_id)) {
-        return allowed_to_ways.contains(&next_way_id);
+    if let Some(mandatory_turns) = graph
+        .mandatory_from_via
+        .get(&(prev_way_id_unwrapped, current_node_id))
+    {
+        let mut allowed_by_mandatory = false;
+        for mandatory_turn in mandatory_turns {
+            if mandatory_turn.target_way_id == next_way_id {
+                if let Some(profile_except_tags) =
+                    graph.profile.as_ref().and_then(|p| p.except_tags.as_ref())
+                {
+                    if let Some(restriction_except_tags) = &mandatory_turn.except_tags {
+                        if profile_except_tags
+                            .iter()
+                            .any(|pet| restriction_except_tags.contains(pet))
+                        {
+                            continue;
+                        }
+                    }
+                }
+                allowed_by_mandatory = true;
+                break;
+            }
+        }
+
+        return allowed_by_mandatory;
     }
 
     true

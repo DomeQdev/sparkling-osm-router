@@ -7,6 +7,7 @@ pub use algorithm::find_route_bidirectional_astar;
 use rayon;
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use tokio::time::{timeout, Duration};
 
@@ -40,6 +41,18 @@ pub struct TurnRestrictionData {
     pub from_way: i64,
     pub via_node: i64,
     pub to_way: i64,
+    pub except_tags: Option<HashSet<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RestrictionDetail {
+    pub except_tags: Option<HashSet<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MandatoryTurnInfo {
+    pub target_way_id: i64,
+    pub except_tags: Option<HashSet<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,9 +66,9 @@ pub struct RouteEdge {
 pub struct RouteGraph {
     pub adjacency_list: FxHashMap<i64, Vec<RouteEdge>>,
     pub adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>>,
-    pub prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool>, // (from_way, via_node, to_way) -> is_restricted
-    pub mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>>,       // (from_way, via_node) -> [allowed_to_ways]
-    pub mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>>,         // (to_way, via_node) -> [allowed_from_ways]
+    pub prohibitory_restrictions: FxHashMap<(i64, i64, i64), RestrictionDetail>,
+    pub mandatory_from_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>>,
+    pub mandatory_to_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>>,
     pub nodes_map: FxHashMap<i64, Node>,
     pub ways_map: FxHashMap<i64, Way>,
     pub profile: Option<Profile>,

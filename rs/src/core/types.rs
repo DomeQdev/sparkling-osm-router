@@ -48,7 +48,11 @@ pub struct Profile {
     pub key: String,
     pub penalties: ProfilePenalties,
     #[serde(default)]
-    pub vehicle_type: Option<String>,
+    pub access_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub oneway_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub except_tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

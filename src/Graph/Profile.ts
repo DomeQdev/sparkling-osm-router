@@ -36,26 +36,11 @@ export type RailwayValue =
     | "miniature"
     | "default";
 
-export type KeyToValueType = {
-    highway: HighwayValue;
-    railway: RailwayValue;
-};
-
-export type VehicleType =
-    | "foot"
-    | "bicycle"
-    | "motorcar"
-    | "motorcycle"
-    | "psv"
-    | "train"
-    | "subway"
-    | "tram";
-
 /**
  * Profile configuration for routing that defines penalties/weights for different way types.
  * The type of values allowed in penalties depends on the selected key.
  */
-export type Profile =
+export type Profile = (
     | {
           /**
            * OSM "highway" key used for routing road networks
@@ -67,11 +52,6 @@ export type Profile =
            * Related highway types can be grouped for the same penalty.
            */
           penalties: [HighwayValue | HighwayValue[], number][];
-
-          /**
-           * Type of vehicle used for routing, affects access restrictions and turn restrictions
-           */
-          vehicleType?: VehicleType;
       }
     | {
           /**
@@ -84,12 +64,23 @@ export type Profile =
            * Related railway types can be grouped for the same penalty.
            */
           penalties: [RailwayValue | RailwayValue[], number][];
+      }
+) & {
+    /**
+     * Tags that affect access permissions ("access" is included by default).
+     */
+    accessTags?: string[];
 
-          /**
-           * Type of vehicle used for routing, affects access restrictions and turn restrictions
-           */
-          vehicleType?: VehicleType;
-      };
+    /**
+     * Tags that indicate one-way streets ("oneway" is included by default).
+     */
+    onewayTags?: string[];
+
+    /**
+     * Tags that specify exceptions to general rules
+     */
+    exceptTags?: string[];
+};
 
 /**
  * Converts the new profile format to the legacy format used internally by the routing engine.
@@ -112,6 +103,8 @@ export const convertProfileFormat = (profile: Profile): string => {
     return JSON.stringify({
         key: profile.key,
         penalties: convertedPenalties,
-        vehicle_type: profile.vehicleType,
+        access_tags: Array.from(new Set([...(profile.accessTags ?? []), "access"])),
+        oneway_tags: Array.from(new Set([...(profile.onewayTags ?? []), "oneway"])),
+        except_tags: profile.exceptTags ?? [],
     });
 };

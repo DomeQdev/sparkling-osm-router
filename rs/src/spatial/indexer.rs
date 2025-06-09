@@ -1,6 +1,9 @@
 use crate::core::errors::Result;
 use crate::core::types::{Graph, Node, WayEnvelope};
-use crate::routing::{RouteEdge, RouteGraph, TurnRestriction, TurnRestrictionData};
+use crate::routing::{
+    MandatoryTurnInfo, RestrictionDetail, RouteEdge, RouteGraph, TurnRestriction,
+    TurnRestrictionData,
+};
 use rstar::{RTree, AABB};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -46,39 +49,55 @@ pub fn index_graph(mut graph: Graph) -> Result<Graph> {
 fn build_routing_graph(graph: &Graph) -> RouteGraph {
     let mut adjacency_list: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
     let mut adjacency_list_reverse: FxHashMap<i64, Vec<RouteEdge>> = FxHashMap::default();
-    let mut turn_restrictions = Vec::new();
+    let mut turn_restrictions_data: Vec<TurnRestrictionData> = Vec::new();
 
-    let mut prohibitory_restrictions: FxHashMap<(i64, i64, i64), bool> = FxHashMap::default();
-    let mut mandatory_from_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
-    let mut mandatory_to_via: FxHashMap<(i64, i64), Vec<i64>> = FxHashMap::default();
+    let mut prohibitory_restrictions: FxHashMap<(i64, i64, i64), RestrictionDetail> =
+        FxHashMap::default();
+    let mut mandatory_from_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>> =
+        FxHashMap::default();
+    let mut mandatory_to_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>> = FxHashMap::default();
 
-    crate::routing::thread_local_turn_restrictions_mut(|tr| {
-        turn_restrictions = tr.clone();
+    crate::routing::thread_local_turn_restrictions_mut(|tr_data| {
+        turn_restrictions_data = tr_data.clone();
     });
 
-    for restriction in &turn_restrictions {
-        let from_way = restriction.from_way;
-        let via_node = restriction.via_node;
-        let to_way = restriction.to_way;
+    for restriction_data in &turn_restrictions_data {
+        let from_way = restriction_data.from_way;
+        let via_node = restriction_data.via_node;
+        let to_way = restriction_data.to_way;
+        let except_tags_clone = restriction_data.except_tags.clone();
 
-        match restriction.restriction_type {
+        match restriction_data.restriction_type {
             TurnRestriction::Prohibitory => {
-                prohibitory_restrictions.insert((from_way, via_node, to_way), true);
+                prohibitory_restrictions.insert(
+                    (from_way, via_node, to_way),
+                    RestrictionDetail {
+                        except_tags: except_tags_clone,
+                    },
+                );
             }
             TurnRestriction::Mandatory => {
                 mandatory_from_via
                     .entry((from_way, via_node))
-                    .or_insert_with(Vec::new)
-                    .push(to_way);
+                    .or_default()
+                    .push(MandatoryTurnInfo {
+                        target_way_id: to_way,
+                        except_tags: except_tags_clone.clone(),
+                    });
 
                 mandatory_to_via
                     .entry((to_way, via_node))
-                    .or_insert_with(Vec::new)
-                    .push(from_way);
+                    .or_default()
+                    .push(MandatoryTurnInfo {
+                        target_way_id: from_way,
+                        except_tags: except_tags_clone,
+                    });
             }
             _ => {}
         }
     }
+
+    let profile = graph.profile.as_ref().expect("Profile must be set");
 
     for way in graph.ways.values() {
         let is_roundabout = way
@@ -86,30 +105,39 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
             .get("junction")
             .map_or(false, |v| v == "roundabout");
 
-        let is_oneway = if way.tags.get("oneway").map_or(false, |v| v == "no") {
-            false
-        } else if is_roundabout {
-            true
+        let mut is_oneway = false;
+        if let Some(oneway_tags) = &profile.oneway_tags {
+            for tag_key in oneway_tags {
+                if let Some(tag_value) = way.tags.get(tag_key) {
+                    is_oneway = tag_value == "yes" || tag_value == "true" || tag_value == "1";
+                    break;
+                }
+            }
         } else {
-            way.tags.get("oneway").map_or(false, |v| v == "yes")
-        };
+            if way.tags.get("oneway").map_or(false, |v| v == "no") {
+                is_oneway = false;
+            } else if is_roundabout {
+                is_oneway = true;
+            } else {
+                is_oneway = way.tags.get("oneway").map_or(false, |v| v == "yes");
+            }
+        }
+
         let way_id = way.id;
 
         let base_cost = {
-            let profile = graph.profile.as_ref().expect("Profile must be set");
             if let Some(tag_value) = way.tags.get(&profile.key) {
-                match profile.penalties.penalties.get(tag_value) {
-                    Some(cost) => *cost,
-                    None => match profile.penalties.default {
-                        Some(default_cost) => default_cost,
-                        None => continue,
-                    },
+                if let Some(cost) = profile.penalties.penalties.get(tag_value) {
+                    *cost
+                } else if let Some(default_cost) = profile.penalties.default {
+                    default_cost
+                } else {
+                    continue;
                 }
+            } else if let Some(default_cost) = profile.penalties.default {
+                default_cost
             } else {
-                match profile.penalties.default {
-                    Some(default_cost) => default_cost,
-                    None => continue,
-                }
+                continue;
             }
         };
 
@@ -171,52 +199,6 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         adjacency_list_reverse.entry(*node_id).or_default();
     }
 
-    for relation in graph.relations.values() {
-        if let Some(restriction_type) = relation.tags.get("type") {
-            if restriction_type == "restriction" {
-                if let Some(restriction_value) = relation.tags.get("restriction") {
-                    let restriction_type = if restriction_value.starts_with("no_") {
-                        TurnRestriction::Prohibitory
-                    } else if restriction_value.starts_with("only_") {
-                        TurnRestriction::Mandatory
-                    } else {
-                        TurnRestriction::Inapplicable
-                    };
-
-                    if restriction_type != TurnRestriction::Inapplicable {
-                        let mut from_way: Option<i64> = None;
-                        let mut via_node: Option<i64> = None;
-                        let mut to_way: Option<i64> = None;
-
-                        for member in &relation.members {
-                            match member.role.as_str() {
-                                "from" if member.member_type == "way" => {
-                                    from_way = Some(member.ref_id);
-                                }
-                                "via" if member.member_type == "node" => {
-                                    via_node = Some(member.ref_id);
-                                }
-                                "to" if member.member_type == "way" => {
-                                    to_way = Some(member.ref_id);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if let (Some(from), Some(via), Some(to)) = (from_way, via_node, to_way) {
-                            turn_restrictions.push(TurnRestrictionData {
-                                restriction_type,
-                                from_way: from,
-                                via_node: via,
-                                to_way: to,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     RouteGraph {
         adjacency_list,
         adjacency_list_reverse,
@@ -231,50 +213,67 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
 
 fn filter_graph(graph: &mut Graph) {
     let profile = graph.profile.clone().expect("Profile must be set");
-    let vehicle_type = profile.vehicle_type.clone();
 
     graph.ways.retain(|_, way| {
-        if !way.tags.contains_key(&profile.key) && profile.penalties.default.is_none() {
+        let mut is_accessible = profile.penalties.default.is_some();
+
+        if let Some(access_tags_hierarchy) = &profile.access_tags {
+            let mut access_decision_made = false;
+            for tag_key in access_tags_hierarchy {
+                if let Some(tag_value) = way.tags.get(tag_key) {
+                    if tag_value == "no" || tag_value == "private" || tag_value == "false" {
+                        is_accessible = false;
+                        access_decision_made = true;
+                        break;
+                    } else if tag_value == "yes"
+                        || tag_value == "designated"
+                        || tag_value == "true"
+                        || tag_value == "permissive"
+                    {
+                        is_accessible = true;
+                        access_decision_made = true;
+                        break;
+                    }
+                }
+            }
+            if !access_decision_made {
+                if let Some(access_value) = way.tags.get("access") {
+                    if access_value == "no" || access_value == "private" {
+                        is_accessible = false;
+                    } else {
+                        is_accessible = true;
+                    }
+                } else {
+                    is_accessible = profile.penalties.default.is_some();
+                }
+            }
+        } else {
+            if let Some(access_value) = way.tags.get("access") {
+                if access_value == "no" || access_value == "private" {
+                    is_accessible = false;
+                } else {
+                    is_accessible = true;
+                }
+            } else {
+                is_accessible = profile.penalties.default.is_some();
+            }
+        }
+
+        if !is_accessible {
             return false;
         }
 
-        if vehicle_type.is_none() {
-            return true;
+        let has_penalty = way
+            .tags
+            .keys()
+            .any(|tag_key| profile.penalties.penalties.contains_key(tag_key))
+            || profile.penalties.default.is_some();
+
+        if !has_penalty && !way.tags.contains_key(&profile.key) {
+            return false;
         }
 
-        let vehicle = vehicle_type.as_ref().unwrap();
-
-        let has_access = match vehicle.as_str() {
-            "foot" => {
-                check_access_for_vehicle(way, "foot", &["footway", "pedestrian", "path"], &[])
-            }
-            "bicycle" => check_access_for_vehicle(way, "bicycle", &["cycleway"], &[]),
-            "motorcar" => check_access_for_vehicle(
-                way,
-                "motorcar",
-                &["motorway", "motorroad"],
-                &["car", "vehicle", "motor_vehicle"],
-            ),
-            "motorcycle" => check_access_for_vehicle(
-                way,
-                "motorcycle",
-                &["motorway", "motorroad"],
-                &["vehicle", "motor_vehicle"],
-            ),
-            "psv" => {
-                check_access_for_vehicle(way, "psv", &[], &[])
-                    || check_access_for_vehicle(way, "bus", &["busway"], &[])
-                    || check_access_for_vehicle(way, "minibus", &[], &[])
-                    || check_access_for_vehicle(way, "tourist_bus", &[], &[])
-                    || check_access_for_vehicle(way, "coach", &[], &[])
-            }
-            "train" => check_access_for_vehicle(way, "train", &["rail"], &[]),
-            "subway" => check_access_for_vehicle(way, "subway", &["subway"], &[]),
-            "tram" => check_access_for_vehicle(way, "tram", &["tram"], &[]),
-            _ => true,
-        };
-
-        has_access
+        true
     });
 
     let used_node_ids: HashSet<i64> = graph
@@ -287,52 +286,29 @@ fn filter_graph(graph: &mut Graph) {
         .nodes
         .retain(|node_id, _| used_node_ids.contains(node_id));
 
-    if let Some(vehicle_type) = &graph.profile.as_ref().and_then(|p| p.vehicle_type.clone()) {
-        let vehicle = vehicle_type.as_str();
+    if let Some(profile_except_tags) = &profile.except_tags {
+        if !profile_except_tags.is_empty() {
+            graph.relations.retain(|_, relation| {
+                if let Some(relation_type) = relation.tags.get("type") {
+                    if relation_type == "restriction" {
+                        if let Some(except_tag_value) = relation.tags.get("except") {
+                            let relation_exceptions: HashSet<&str> =
+                                except_tag_value.split(';').map(|s| s.trim()).collect();
 
-        graph.relations.retain(|_, relation| {
-            if let Some(relation_type) = relation.tags.get("type") {
-                if relation_type == "restriction" {
-                    if let Some(except_tag) = relation.tags.get("except") {
-                        let exceptions: HashSet<&str> =
-                            except_tag.split(';').map(|s| s.trim()).collect();
-
-                        match vehicle {
-                            "foot" => {
-                                !exceptions.contains("foot") && !exceptions.contains("pedestrian")
-                            }
-                            "bicycle" => !exceptions.contains("bicycle"),
-                            "motorcar" => {
-                                !exceptions.contains("motorcar")
-                                    && !exceptions.contains("car")
-                                    && !exceptions.contains("motor_vehicle")
-                            }
-                            "motorcycle" => {
-                                !exceptions.contains("motorcycle")
-                                    && !exceptions.contains("motor_vehicle")
-                            }
-                            "psv" => {
-                                !exceptions.contains("psv")
-                                    && !exceptions.contains("bus")
-                                    && !exceptions.contains("minibus")
-                                    && !exceptions.contains("tourist_bus")
-                                    && !exceptions.contains("coach")
-                            }
-                            "train" => !exceptions.contains("train"),
-                            "subway" => !exceptions.contains("subway"),
-                            "tram" => !exceptions.contains("tram"),
-                            _ => true,
+                            !profile_except_tags
+                                .iter()
+                                .any(|pet| relation_exceptions.contains(pet.as_str()))
+                        } else {
+                            true
                         }
                     } else {
-                        true
+                        false
                     }
                 } else {
                     false
                 }
-            } else {
-                false
-            }
-        });
+            });
+        }
     } else {
         graph.relations.retain(|_, relation| {
             relation
@@ -341,47 +317,6 @@ fn filter_graph(graph: &mut Graph) {
                 .map_or(false, |type_tag| type_tag == "restriction")
         });
     }
-}
-
-fn check_access_for_vehicle(
-    way: &crate::core::types::Way,
-    vehicle_tag: &str,
-    highway_values: &[&str],
-    additional_tags: &[&str],
-) -> bool {
-    let general_access = way
-        .tags
-        .get("access")
-        .map_or(true, |v| v != "no" && v != "private");
-
-    let dedicated_highway = if !highway_values.is_empty() {
-        way.tags
-            .get("highway")
-            .map_or(false, |h| highway_values.contains(&h.as_str()))
-    } else {
-        false
-    };
-
-    if dedicated_highway {
-        return true;
-    }
-
-    if let Some(vehicle_value) = way.tags.get(vehicle_tag) {
-        if vehicle_value == "yes" || vehicle_value == "designated" {
-            return true;
-        }
-        if vehicle_value == "no" {
-            return false;
-        }
-    }
-
-    for tag in additional_tags {
-        if way.tags.get(*tag).map_or(false, |v| v == "no") {
-            return false;
-        }
-    }
-
-    general_access
 }
 
 fn process_turn_restrictions(graph: &mut Graph) {
@@ -422,15 +357,17 @@ fn process_single_restriction(
     let mut from_way_id: Option<i64> = None;
     let mut via_node_id: Option<i64> = None;
     let mut to_way_id: Option<i64> = None;
-    let mut except = HashSet::new();
+    let mut current_relation_except_tags: Option<HashSet<String>> = None;
 
-    if let Some(except_tag) = relation.tags.get("except") {
-        except_tag
-            .split(';')
-            .filter(|s| !s.is_empty())
-            .for_each(|s| {
-                except.insert(s.to_string());
-            });
+    if let Some(except_tag_str) = relation.tags.get("except") {
+        if !except_tag_str.is_empty() {
+            current_relation_except_tags = Some(
+                except_tag_str
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .collect(),
+            );
+        }
     }
 
     for member in &relation.members {
@@ -457,6 +394,7 @@ fn process_single_restriction(
                         from_way: from_id,
                         via_node: via_id,
                         to_way: to_id,
+                        except_tags: current_relation_except_tags.clone(),
                     });
                 });
 

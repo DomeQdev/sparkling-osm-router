@@ -1,8 +1,8 @@
 {
     "name": "sparkling-osm-router",
-    "description": "✨ Lightweight OSM Router made with TypeScript and Rust",
+    "description": "✨ OSM Router made with TypeScript and Rust",
     "license": "GNU General Public License v3.0",
-    "version": "1.1.4",
+    "version": "2.0.0-alpha",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "repository": {
@@ -25,7 +25,7 @@
         "@neon-rs/cli": "^0.1.82"
     },
     "devDependencies": {
-        "@types/node": "^22.15.2",
+        "@types/node": "^22.15.30",
         "typescript": "^5.8.3"
     },
     "scripts": {
