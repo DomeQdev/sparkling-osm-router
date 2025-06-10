@@ -8,7 +8,6 @@ pub struct RouteRequest {
     pub id: String,
     pub start_node: i64,
     pub end_node: i64,
-    pub initial_bearing: Option<f64>,
 }
 
 pub struct RouteQueue {
@@ -16,11 +15,13 @@ pub struct RouteQueue {
     active_count: Arc<Mutex<usize>>,
     pub max_concurrency: usize,
     graph: Arc<std::sync::RwLock<crate::core::types::Graph>>,
+    profile: Arc<crate::core::types::Profile>,
 }
 
 impl RouteQueue {
     pub fn new(
         graph: Arc<std::sync::RwLock<crate::core::types::Graph>>,
+        profile: Arc<crate::core::types::Profile>,
         max_concurrency: Option<usize>,
     ) -> Self {
         let actual_concurrency = max_concurrency.unwrap_or_else(|| {
@@ -37,6 +38,7 @@ impl RouteQueue {
             active_count: Arc::new(Mutex::new(0)),
             max_concurrency: actual_concurrency,
             graph,
+            profile,
         }
     }
 
@@ -76,10 +78,10 @@ impl RouteQueue {
 
             let self_clone = self.clone();
             let graph_clone = self.graph.clone();
+            let profile_clone = self.profile.clone();
             let request_id = request.id.clone();
             let start_node = request.start_node;
             let end_node = request.end_node;
-            let initial_bearing = request.initial_bearing;
             let callback_clone = callback;
             let channel_clone = channel;
 
@@ -89,9 +91,10 @@ impl RouteQueue {
                 .spawn(move || {
                     let result = {
                         let graph_guard = graph_clone.read().unwrap();
+
                         crate::TOKIO_RUNTIME.block_on(async {
                             graph_guard
-                                .route(start_node, end_node, initial_bearing)
+                                .route(start_node, end_node, &profile_clone)
                                 .await
                         })
                     };
@@ -192,11 +195,6 @@ impl RouteQueue {
         let active_count = self.active_count.lock().unwrap();
         *active_count
     }
-
-    pub fn clear(&self) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.clear();
-    }
 }
 
 impl Clone for RouteQueue {
@@ -206,6 +204,7 @@ impl Clone for RouteQueue {
             active_count: self.active_count.clone(),
             max_concurrency: self.max_concurrency,
             graph: self.graph.clone(),
+            profile: self.profile.clone(),
         }
     }
 }

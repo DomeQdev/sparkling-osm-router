@@ -10,6 +10,8 @@ pub enum GraphError {
     XmlParsing(#[from] XmlError),
     #[error("Invalid OSM Data: {0}")]
     InvalidOsmData(String),
+    #[error("Graph Not Indexed: {0}")]
+    GraphNotIndexed(String),
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;

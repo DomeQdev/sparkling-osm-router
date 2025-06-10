@@ -1,7 +1,7 @@
 use crate::core::errors::Result;
 use crate::core::types::{Graph, Node, WayEnvelope};
 use crate::routing::{
-    MandatoryTurnInfo, RestrictionDetail, RouteEdge, RouteGraph, TurnRestriction,
+    Edge as RouteEdge, MandatoryTurnInfo, RestrictionDetail, RouteGraph, TurnRestriction,
     TurnRestrictionData,
 };
 use rstar::{RTree, AABB};
@@ -97,64 +97,21 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         }
     }
 
-    let profile = graph.profile.as_ref().expect("Profile must be set");
-
     for way in graph.ways.values() {
-        let is_roundabout = way
-            .tags
-            .get("junction")
-            .map_or(false, |v| v == "roundabout");
-
-        let mut is_oneway = false;
-        if let Some(oneway_tags) = &profile.oneway_tags {
-            for tag_key in oneway_tags {
-                if let Some(tag_value) = way.tags.get(tag_key) {
-                    is_oneway = tag_value == "yes" || tag_value == "true" || tag_value == "1";
-                    break;
-                }
-            }
-        } else {
-            if way.tags.get("oneway").map_or(false, |v| v == "no") {
-                is_oneway = false;
-            } else if is_roundabout {
-                is_oneway = true;
-            } else {
-                is_oneway = way.tags.get("oneway").map_or(false, |v| v == "yes");
-            }
-        }
-
         let way_id = way.id;
-
-        let base_cost = {
-            if let Some(tag_value) = way.tags.get(&profile.key) {
-                if let Some(cost) = profile.penalties.penalties.get(tag_value) {
-                    *cost
-                } else if let Some(default_cost) = profile.penalties.default {
-                    default_cost
-                } else {
-                    continue;
-                }
-            } else if let Some(default_cost) = profile.penalties.default {
-                default_cost
-            } else {
-                continue;
-            }
-        };
 
         for i in 0..way.node_refs.len().saturating_sub(1) {
             let from_node = way.node_refs[i];
             let to_node = way.node_refs[i + 1];
 
-            let cost = if let (Some(node1), Some(node2)) =
+            let distance_meters = if let (Some(node1), Some(node2)) =
                 (graph.nodes.get(&from_node), graph.nodes.get(&to_node))
             {
-                let distance = crate::spatial::geometry::haversine_distance(
+                crate::spatial::geometry::haversine_distance(
                     node1.lat, node1.lon, node2.lat, node2.lon,
-                );
-
-                (distance * 1000.0 * (base_cost as f64)).round() as i64
+                ) * 1000.0
             } else {
-                (base_cost * 1000.0) as i64
+                0.0
             };
 
             adjacency_list
@@ -163,7 +120,7 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
                 .push(RouteEdge {
                     to_node,
                     way_id,
-                    cost,
+                    distance: distance_meters,
                 });
 
             adjacency_list_reverse
@@ -172,25 +129,8 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
                 .push(RouteEdge {
                     to_node: from_node,
                     way_id,
-                    cost,
+                    distance: distance_meters,
                 });
-
-            if !is_oneway {
-                adjacency_list.entry(to_node).or_default().push(RouteEdge {
-                    to_node: from_node,
-                    way_id,
-                    cost,
-                });
-
-                adjacency_list_reverse
-                    .entry(from_node)
-                    .or_default()
-                    .push(RouteEdge {
-                        to_node: to_node,
-                        way_id,
-                        cost,
-                    });
-            }
         }
     }
 
@@ -199,6 +139,19 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         adjacency_list_reverse.entry(*node_id).or_default();
     }
 
+    let ways_info: FxHashMap<i64, crate::routing::WayInfo> = graph
+        .ways
+        .iter()
+        .map(|(&way_id, way)| {
+            let tags_fx: FxHashMap<String, String> = way
+                .tags
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            (way_id, crate::routing::WayInfo { tags: tags_fx })
+        })
+        .collect();
+
     RouteGraph {
         adjacency_list,
         adjacency_list_reverse,
@@ -206,76 +159,11 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         mandatory_from_via,
         mandatory_to_via,
         nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
-        ways_map: FxHashMap::from_iter(graph.ways.clone()),
-        profile: graph.profile.clone(),
+        ways_info,
     }
 }
 
 fn filter_graph(graph: &mut Graph) {
-    let profile = graph.profile.clone().expect("Profile must be set");
-
-    graph.ways.retain(|_, way| {
-        let mut is_accessible = profile.penalties.default.is_some();
-
-        if let Some(access_tags_hierarchy) = &profile.access_tags {
-            let mut access_decision_made = false;
-            for tag_key in access_tags_hierarchy {
-                if let Some(tag_value) = way.tags.get(tag_key) {
-                    if tag_value == "no" || tag_value == "private" || tag_value == "false" {
-                        is_accessible = false;
-                        access_decision_made = true;
-                        break;
-                    } else if tag_value == "yes"
-                        || tag_value == "designated"
-                        || tag_value == "true"
-                        || tag_value == "permissive"
-                    {
-                        is_accessible = true;
-                        access_decision_made = true;
-                        break;
-                    }
-                }
-            }
-            if !access_decision_made {
-                if let Some(access_value) = way.tags.get("access") {
-                    if access_value == "no" || access_value == "private" {
-                        is_accessible = false;
-                    } else {
-                        is_accessible = true;
-                    }
-                } else {
-                    is_accessible = profile.penalties.default.is_some();
-                }
-            }
-        } else {
-            if let Some(access_value) = way.tags.get("access") {
-                if access_value == "no" || access_value == "private" {
-                    is_accessible = false;
-                } else {
-                    is_accessible = true;
-                }
-            } else {
-                is_accessible = profile.penalties.default.is_some();
-            }
-        }
-
-        if !is_accessible {
-            return false;
-        }
-
-        let has_penalty = way
-            .tags
-            .keys()
-            .any(|tag_key| profile.penalties.penalties.contains_key(tag_key))
-            || profile.penalties.default.is_some();
-
-        if !has_penalty && !way.tags.contains_key(&profile.key) {
-            return false;
-        }
-
-        true
-    });
-
     let used_node_ids: HashSet<i64> = graph
         .ways
         .values()
@@ -286,37 +174,17 @@ fn filter_graph(graph: &mut Graph) {
         .nodes
         .retain(|node_id, _| used_node_ids.contains(node_id));
 
-    if let Some(profile_except_tags) = &profile.except_tags {
-        if !profile_except_tags.is_empty() {
-            graph.relations.retain(|_, relation| {
-                if let Some(relation_type) = relation.tags.get("type") {
-                    if relation_type == "restriction" {
-                        if let Some(except_tag_value) = relation.tags.get("except") {
-                            let relation_exceptions: HashSet<&str> =
-                                except_tag_value.split(';').map(|s| s.trim()).collect();
-
-                            !profile_except_tags
-                                .iter()
-                                .any(|pet| relation_exceptions.contains(pet.as_str()))
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            });
+    graph.relations.retain(|_, relation| {
+        if let Some(relation_type) = relation.tags.get("type") {
+            if relation_type == "restriction" {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         }
-    } else {
-        graph.relations.retain(|_, relation| {
-            relation
-                .tags
-                .get("type")
-                .map_or(false, |type_tag| type_tag == "restriction")
-        });
-    }
+    });
 }
 
 fn process_turn_restrictions(graph: &mut Graph) {
