@@ -83,7 +83,7 @@ const ensureOSMGraph = async ({ filePath, overpassGraph }: GraphOptions) => {
 
     const query = `[out:xml][timeout:${overpassGraph.timeout || 1e4}];
         ${overpassGraph.query}
-        (poly: "${overpassGraph.bounds.map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`).join(" ")});
+        (poly: "${overpassGraph.bounds.map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`).join(" ")}");
 
         >->.n;
         <->.r;
@@ -108,7 +108,7 @@ const ensureOSMGraph = async ({ filePath, overpassGraph }: GraphOptions) => {
 
             if (response?.includes("Error")) {
                 const errorMessage = response.match(/<strong[^>]*>Error<\/strong>:([^<]*)/)?.[1]?.trim();
-                throw new Error(errorMessage);
+                throw new Error(decodeURIComponent(errorMessage || "Unknown error"));
             }
 
             break;
