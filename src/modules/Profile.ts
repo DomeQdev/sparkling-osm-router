@@ -1,4 +1,4 @@
-import { createProfile, getNearestNodes, getRoute } from "../RustModules";
+import { createProfile, getNearestNodes, getRoute, searchNodes, searchWays } from "../RustModules";
 import { Location } from "../typings";
 import RouteQueue from "./RouteQueue";
 
@@ -90,6 +90,18 @@ class Profile {
         if (this.graphId === null) throw new Error("Graph is not loaded.");
 
         return getNearestNodes(this.graphId, this.profileId, lon, lat, limit);
+    };
+
+    searchNodes = ([lon, lat]: Location, radius: number) => {
+        if (this.graphId === null) throw new Error("Graph is not loaded.");
+
+        return searchNodes(this.graphId, this.profileId, lon, lat, radius);
+    };
+
+    searchWays = ([lon, lat]: Location, radius: number) => {
+        if (this.graphId === null) throw new Error("Graph is not loaded.");
+
+        return searchWays(this.graphId, this.profileId, lon, lat, radius);
     };
 
     getRoute = async (startNode: number, endNode: number) => {

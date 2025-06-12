@@ -1,5 +1,5 @@
 use crate::core::errors::Result;
-use crate::core::types::{Graph, Node, WayEnvelope};
+use crate::core::types::{Graph, Node, NodeEnvelope, WayEnvelope};
 use crate::routing::{
     Edge as RouteEdge, MandatoryTurnInfo, RestrictionDetail, RouteGraph, TurnRestriction,
     TurnRestrictionData,
@@ -16,18 +16,28 @@ thread_local! {
 
 impl Graph {
     pub fn index_rtree(&mut self) -> Result<()> {
-        let mut envelopes: Vec<WayEnvelope> = Vec::new();
+        let mut way_envelopes: Vec<WayEnvelope> = Vec::new();
+        let mut node_envelopes: Vec<NodeEnvelope> = Vec::new();
 
         for way in self.ways.values() {
             if let Some(envelope) = calculate_way_envelope(way, &self.nodes) {
-                envelopes.push(WayEnvelope {
+                way_envelopes.push(WayEnvelope {
                     way_id: way.id,
                     envelope,
                 });
             }
         }
 
-        self.way_rtree = RTree::bulk_load(envelopes);
+        self.way_rtree = RTree::bulk_load(way_envelopes);
+
+        for node in self.nodes.values() {
+            node_envelopes.push(NodeEnvelope {
+                node_id: node.id,
+                envelope: AABB::from_point([node.lon, node.lat]),
+            });
+        }
+
+        self.node_rtree = RTree::bulk_load(node_envelopes);
 
         Ok(())
     }

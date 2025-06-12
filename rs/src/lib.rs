@@ -524,6 +524,106 @@ fn clear_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     Ok(cx.boolean(removed))
 }
 
+fn search_nodes_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
+    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
+    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
+    let radius = cx.argument::<JsNumber>(4)?.value(&mut cx);
+
+    let graph_store_lock = GRAPH_STORAGE.lock().unwrap();
+    let graph_arc = match graph_store_lock.get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error("Graph not found"),
+    };
+    drop(graph_store_lock);
+
+    let profile_store_lock = PROFILE_STORAGE.lock().unwrap();
+    let profile_arc = match profile_store_lock.get(&profile_id) {
+        Some(p) => p.clone(),
+        None => return cx.throw_error("Profile not found"),
+    };
+    drop(profile_store_lock);
+
+    let graph = graph_arc.read().unwrap();
+    let profile = profile_arc.as_ref();
+
+    match graph.search_nodes_in_radius(lon, lat, radius, profile) {
+        Ok(nodes) => {
+            let js_array = JsArray::new(&mut cx, nodes.len() as usize);
+            for (i, node) in nodes.iter().enumerate() {
+                let js_node = cx.empty_object();
+                let id = cx.number(node.id as f64);
+                let js_lat = cx.number(node.lat);
+                let js_lon = cx.number(node.lon);
+                let js_tags = cx.empty_object();
+                for (key, value) in &node.tags {
+                    let value_js = cx.string(value);
+                    js_tags.set(&mut cx, key.as_str(), value_js)?;
+                }
+                js_node.set(&mut cx, "id", id)?;
+                js_node.set(&mut cx, "lat", js_lat)?;
+                js_node.set(&mut cx, "lon", js_lon)?;
+                js_node.set(&mut cx, "tags", js_tags)?;
+                js_array.set(&mut cx, i as u32, js_node)?;
+            }
+            Ok(js_array.upcast())
+        }
+        Err(e) => cx.throw_error(format!("Error searching nodes: {}", e)),
+    }
+}
+
+fn search_ways_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
+    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
+    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
+    let radius = cx.argument::<JsNumber>(4)?.value(&mut cx);
+
+    let graph_store_lock = GRAPH_STORAGE.lock().unwrap();
+    let graph_arc = match graph_store_lock.get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error("Graph not found"),
+    };
+    drop(graph_store_lock);
+
+    let profile_store_lock = PROFILE_STORAGE.lock().unwrap();
+    let profile_arc = match profile_store_lock.get(&profile_id) {
+        Some(p) => p.clone(),
+        None => return cx.throw_error("Profile not found"),
+    };
+    drop(profile_store_lock);
+
+    let graph = graph_arc.read().unwrap();
+    let profile = profile_arc.as_ref();
+
+    match graph.search_ways_in_radius(lon, lat, radius, profile) {
+        Ok(ways) => {
+            let js_array = JsArray::new(&mut cx, ways.len() as usize);
+            for (i, way) in ways.iter().enumerate() {
+                let js_way = cx.empty_object();
+                let id = cx.number(way.id as f64);
+                let js_node_refs = JsArray::new(&mut cx, way.node_refs.len() as usize);
+                for (j, node_ref) in way.node_refs.iter().enumerate() {
+                    let js_node_ref = cx.number(*node_ref as f64);
+                    js_node_refs.set(&mut cx, j as u32, js_node_ref)?;
+                }
+                let js_tags = cx.empty_object();
+                for (key, value) in &way.tags {
+                    let value_js = cx.string(value);
+                    js_tags.set(&mut cx, key.as_str(), value_js)?;
+                }
+                js_way.set(&mut cx, "id", id)?;
+                js_way.set(&mut cx, "nodes", js_node_refs)?;
+                js_way.set(&mut cx, "tags", js_tags)?;
+                js_array.set(&mut cx, i as u32, js_way)?;
+            }
+            Ok(js_array.upcast())
+        }
+        Err(e) => cx.throw_error(format!("Error searching ways: {}", e)),
+    }
+}
+
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("loadGraph", load_graph_rust)?;
@@ -540,6 +640,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("startQueueProcessing", start_queue_processing)?;
     cx.export_function("getQueueStatus", get_queue_status)?;
     cx.export_function("clearRouteQueue", clear_route_queue)?;
+    cx.export_function("searchNodes", search_nodes_rust)?;
+    cx.export_function("searchWays", search_ways_rust)?;
 
     Ok(())
 }

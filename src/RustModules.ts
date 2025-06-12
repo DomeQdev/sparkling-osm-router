@@ -9,6 +9,22 @@ export const getNode: (graphId: number, node: number) => OsmNode | null = bindin
 export const getWay: (graphId: number, way: number) => OsmWay | null = binding.getWay;
 export const getShape: (graphId: number, nodes: number[]) => Location[] = binding.getShape;
 
+export const searchNodes: (
+    graphId: number,
+    profileId: number,
+    lon: number,
+    lat: number,
+    radius: number
+) => OsmNode[] = binding.searchNodes;
+
+export const searchWays: (
+    graphId: number,
+    profileId: number,
+    lon: number,
+    lat: number,
+    radius: number
+) => OsmWay[] = binding.searchWays;
+
 export const getNearestNodes: (
     graphId: number,
     profileId: number,
