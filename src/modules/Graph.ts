@@ -18,8 +18,8 @@ export type GraphOptions = {
 };
 
 class Graph {
-    private graphId: number | null = null;
     private options: GraphOptions;
+    public graphId: number | null = null;
     public Profile: typeof BaseProfile;
 
     constructor(options: GraphOptions) {
@@ -27,8 +27,8 @@ class Graph {
         this.options = options;
 
         this.Profile = class Profile extends BaseProfile {
-            get graphId(): number | null {
-                return parentGraph.graphId;
+            get graph() {
+                return parentGraph;
             }
         };
     }

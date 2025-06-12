@@ -1,5 +1,6 @@
 import { createProfile, getNearestNodes, getRoute, searchNodes, searchWays } from "../RustModules";
 import { Location } from "../typings";
+import Graph from "./Graph";
 import RouteQueue from "./RouteQueue";
 
 type HighwayValue =
@@ -82,38 +83,38 @@ class Profile {
         );
     }
 
-    get graphId(): number | null {
-        return null;
+    get graph(): Graph {
+        return undefined as any; // This will be set by the Graph class when creating a Profile instance.
     }
 
     getNearestNodes = ([lon, lat]: Location, limit: number) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getNearestNodes(this.graphId, this.profileId, lon, lat, limit);
+        return getNearestNodes(this.graph.graphId, this.profileId, lon, lat, limit);
     };
 
     searchNodes = ([lon, lat]: Location, radius: number) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return searchNodes(this.graphId, this.profileId, lon, lat, radius);
+        return searchNodes(this.graph.graphId, this.profileId, lon, lat, radius);
     };
 
     searchWays = ([lon, lat]: Location, radius: number) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return searchWays(this.graphId, this.profileId, lon, lat, radius);
+        return searchWays(this.graph.graphId, this.profileId, lon, lat, radius);
     };
 
     getRoute = async (startNode: number, endNode: number) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getRoute(this.graphId, this.profileId, startNode, endNode);
+        return getRoute(this.graph.graphId, this.profileId, startNode, endNode);
     };
 
     createRouteQueue = (enableProgressBar?: boolean, maxConcurrency?: number) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return new RouteQueue(this.graphId, this.profileId, enableProgressBar, maxConcurrency);
+        return new RouteQueue(this.graph.graphId, this.profileId, enableProgressBar, maxConcurrency);
     };
 }
 
