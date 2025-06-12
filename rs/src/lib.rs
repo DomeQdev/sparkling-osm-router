@@ -98,7 +98,6 @@ fn get_nearest_nodes_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
     let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
     let limit = cx.argument::<JsNumber>(4)?.value(&mut cx) as usize;
-    let distance_threshold_multiplier = cx.argument::<JsNumber>(5)?.value(&mut cx);
 
     let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(graph) => graph.clone(),
@@ -112,13 +111,10 @@ fn get_nearest_nodes_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
     };
     drop(profile_store);
 
-    let nearest_result = graph_store.read().unwrap().find_nearest_ways_and_nodes(
-        lon,
-        lat,
-        limit,
-        distance_threshold_multiplier,
-        &profile,
-    );
+    let nearest_result = graph_store
+        .read()
+        .unwrap()
+        .find_nearest_ways_and_nodes(lon, lat, limit, &profile);
 
     match nearest_result {
         Ok(node_ids) => {

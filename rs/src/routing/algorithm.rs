@@ -1,5 +1,5 @@
 use crate::core::errors::{GraphError, Result};
-use crate::core::types::{Node, Profile};
+use crate::core::types::{Node, Profile, Way};
 use crate::routing::{Edge, RouteGraph, RouteResult};
 use crate::spatial::geometry::haversine_distance;
 use rustc_hash::FxHashMap;
@@ -33,16 +33,16 @@ impl PartialOrd for NodeWithPrevious {
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct VisitKey {
     node_id: i64,
-    prev_node: i64,
-    prev_way: i64,
+    prev_node: Option<i64>,
+    prev_way: Option<i64>,
 }
 
 impl VisitKey {
     fn new(node_id: i64, prev_node: Option<i64>, prev_way: Option<i64>) -> Self {
         Self {
             node_id,
-            prev_node: prev_node.unwrap_or(0),
-            prev_way: prev_way.unwrap_or(0),
+            prev_node,
+            prev_way,
         }
     }
 }
@@ -59,7 +59,7 @@ pub fn find_route_bidirectional_astar(
         return Ok(None);
     }
 
-    let start_node = match graph.nodes_map.get(&start_node_id) {
+    let start_node = match graph.nodes.get(&start_node_id) {
         Some(node) => node,
         None => {
             return Err(GraphError::InvalidOsmData(format!(
@@ -69,7 +69,7 @@ pub fn find_route_bidirectional_astar(
         }
     };
 
-    let end_node = match graph.nodes_map.get(&end_node_id) {
+    let end_node = match graph.nodes.get(&end_node_id) {
         Some(node) => node,
         None => {
             return Err(GraphError::InvalidOsmData(format!(
@@ -135,14 +135,8 @@ pub fn find_route_bidirectional_astar(
                 let current_node_id = current.node_id;
                 let current_g_score = *g_score_forward.get(&current_node_id).unwrap_or(&i64::MAX);
 
-                let found_in_backward = visited_nodes_backward
-                    .keys()
-                    .any(|visit_key| visit_key.node_id == current_node_id);
-                if found_in_backward {
-                    let backward_cost =
-                        *g_score_backward.get(&current_node_id).unwrap_or(&i64::MAX);
+                if let Some(&backward_cost) = g_score_backward.get(&current_node_id) {
                     let total_cost = current_g_score + backward_cost;
-
                     if total_cost < best_cost {
                         best_cost = total_cost;
                         best_node = Some(current_node_id);
@@ -160,7 +154,6 @@ pub fn find_route_bidirectional_astar(
                 );
 
                 if visited_nodes_forward.contains_key(&visit_key) {
-                    forward_turn = !forward_turn;
                     continue;
                 }
 
@@ -185,10 +178,8 @@ pub fn find_route_bidirectional_astar(
                 let current_node_id = current.node_id;
                 let current_g_score = *g_score_backward.get(&current_node_id).unwrap_or(&i64::MAX);
 
-                if visited_nodes_forward.contains_key(&VisitKey::new(current_node_id, None, None)) {
-                    let forward_cost = *g_score_forward.get(&current_node_id).unwrap_or(&i64::MAX);
+                if let Some(&forward_cost) = g_score_forward.get(&current_node_id) {
                     let total_cost = current_g_score + forward_cost;
-
                     if total_cost < best_cost {
                         best_cost = total_cost;
                         best_node = Some(current_node_id);
@@ -206,13 +197,12 @@ pub fn find_route_bidirectional_astar(
                 );
 
                 if visited_nodes_backward.contains_key(&visit_key) {
-                    forward_turn = !forward_turn;
                     continue;
                 }
 
                 visited_nodes_backward.insert(visit_key, true);
 
-                if let Some(_edges) = graph.adjacency_list.get(&current_node_id) {
+                if let Some(_edges) = graph.adjacency_list_reverse.get(&current_node_id) {
                     process_edges_reverse(
                         graph,
                         current,
@@ -253,74 +243,23 @@ pub fn find_route_bidirectional_astar(
 }
 
 fn calculate_edge_cost(graph: &RouteGraph, edge: &Edge, profile: &Profile) -> i64 {
-    let way_info = match graph.ways_info.get(&edge.way_id) {
+    let way = match graph.ways.get(&edge.way_id) {
         Some(info) => info,
         None => return i64::MAX,
     };
 
-    let mut is_accessible = profile.penalties.default.is_some();
-    if let Some(access_tags_hierarchy) = &profile.access_tags {
-        let mut access_decision_made = false;
-        for tag_key in access_tags_hierarchy {
-            if let Some(tag_value) = way_info.tags.get(tag_key) {
-                if tag_value == "no" || tag_value == "private" || tag_value == "false" {
-                    is_accessible = false;
-                    access_decision_made = true;
-                    break;
-                } else if tag_value == "yes"
-                    || tag_value == "designated"
-                    || tag_value == "true"
-                    || tag_value == "permissive"
-                {
-                    is_accessible = true;
-                    access_decision_made = true;
-                    break;
-                }
-            }
-        }
-        if !access_decision_made {
-            if let Some(access_value) = way_info.tags.get("access") {
-                if access_value == "no" || access_value == "private" {
-                    is_accessible = false;
-                } else {
-                    is_accessible = true;
-                }
-            } else {
-                is_accessible = profile.penalties.default.is_some();
-            }
-        }
-    } else {
-        if let Some(access_value) = way_info.tags.get("access") {
-            if access_value == "no" || access_value == "private" {
-                is_accessible = false;
-            } else {
-                is_accessible = true;
-            }
-        } else {
-            is_accessible = profile.penalties.default.is_some();
-        }
-    }
-
-    if !is_accessible {
+    if !is_way_accessible(way, profile) {
         return i64::MAX;
     }
 
-    let speed_kmh = way_info
-        .tags
-        .get("maxspeed")
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(50.0);
-
-    if speed_kmh <= 0.0 {
-        return i64::MAX;
-    }
-
-    let time_hours = edge.distance / (speed_kmh * 1000.0);
-    let mut cost = (time_hours * 3_600_000.0) as i64;
+    let mut cost = edge.distance as i64;
 
     let mut penalty_applied_specific = false;
-    if let Some(way_type_tag_value) = way_info.tags.get(&profile.key) {
+    if let Some(way_type_tag_value) = way.tags.get(&profile.key) {
         if let Some(penalty_multiplier) = profile.penalties.penalties.get(way_type_tag_value) {
+            if *penalty_multiplier <= 0.0 {
+                return i64::MAX;
+            }
             cost = (cost as f64 * penalty_multiplier) as i64;
             penalty_applied_specific = true;
         }
@@ -328,6 +267,9 @@ fn calculate_edge_cost(graph: &RouteGraph, edge: &Edge, profile: &Profile) -> i6
 
     if !penalty_applied_specific {
         if let Some(default_penalty_multiplier) = profile.penalties.default {
+            if default_penalty_multiplier <= 0.0 {
+                return i64::MAX;
+            }
             cost = (cost as f64 * default_penalty_multiplier) as i64;
         }
     }
@@ -339,35 +281,29 @@ fn calculate_edge_cost(graph: &RouteGraph, edge: &Edge, profile: &Profile) -> i6
     cost
 }
 
-fn is_oneway(way_info: &crate::routing::WayInfo, profile: &Profile) -> bool {
-    if way_info
+fn get_way_directionality(way: &Way, profile: &Profile) -> i8 {
+    if way
         .tags
         .get("junction")
         .map_or(false, |v| v == "roundabout")
     {
-        return true;
+        return 1;
     }
 
     if let Some(oneway_tags_config) = &profile.oneway_tags {
         for tag_key in oneway_tags_config {
-            if let Some(tag_value) = way_info.tags.get(tag_key) {
-                if tag_value == "yes" || tag_value == "true" || tag_value == "1" {
-                    return true;
+            if let Some(tag_value) = way.tags.get(tag_key) {
+                match tag_value.as_str() {
+                    "yes" | "true" | "1" => return 1,
+                    "-1" => return -1,
+                    "no" | "false" | "0" => return 0,
+                    _ => {}
                 }
             }
         }
     }
 
-    match way_info.tags.get("oneway") {
-        Some(value) => {
-            if value == "yes" || value == "true" || value == "1" {
-                true
-            } else {
-                false
-            }
-        }
-        None => false,
-    }
+    0
 }
 
 fn process_edges_reverse(
@@ -383,17 +319,6 @@ fn process_edges_reverse(
     if let Some(reverse_edges) = graph.adjacency_list_reverse.get(&current.node_id) {
         for edge in reverse_edges {
             let to_node_id = edge.to_node;
-
-            let way_info = match graph.ways_info.get(&edge.way_id) {
-                Some(info) => info,
-                None => continue,
-            };
-
-            if is_oneway(way_info, profile) {
-                if !way_info.tags.get("oneway").map_or(false, |v| v == "-1") {
-                    continue;
-                }
-            }
 
             if !is_turn_allowed_reverse(
                 graph,
@@ -414,7 +339,7 @@ fn process_edges_reverse(
                 came_from.insert(to_node_id, (current.node_id, edge.way_id));
                 g_score.insert(to_node_id, tentative_g_score);
 
-                if let Some(node) = graph.nodes_map.get(&to_node_id) {
+                if let Some(node) = graph.nodes.get(&to_node_id) {
                     let h_cost = heuristic_cost(node, target_node);
 
                     open_set.push(NodeWithPrevious {
@@ -598,6 +523,40 @@ fn reconstruct_path_backward(
     (path_nodes, path_ways)
 }
 
+pub fn is_way_accessible(way_info: &Way, profile: &Profile) -> bool {
+    let mut is_accessible = true;
+
+    if !profile.penalties.default.is_some()
+        && (!way_info.tags.contains_key(&profile.key)
+            || !profile
+                .penalties
+                .penalties
+                .contains_key(&way_info.tags[&profile.key]))
+    {
+        return false;
+    }
+
+    if let Some(access_tags_hierarchy) = &profile.access_tags {
+        for tag_key in access_tags_hierarchy {
+            if let Some(tag_value) = way_info.tags.get(tag_key) {
+                if tag_value == "no" || tag_value == "private" || tag_value == "false" {
+                    is_accessible = false;
+                    break;
+                } else if tag_value == "yes"
+                    || tag_value == "designated"
+                    || tag_value == "true"
+                    || tag_value == "permissive"
+                {
+                    is_accessible = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    is_accessible
+}
+
 fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
     let distance = estimate_distance(node, end_node);
     let heuristic_factor = 25.0;
@@ -630,15 +589,13 @@ fn process_edges(
     for edge in edges {
         let to_node_id = edge.to_node;
 
-        let way_info = match graph.ways_info.get(&edge.way_id) {
+        let way_info = match graph.ways.get(&edge.way_id) {
             Some(info) => info,
             None => continue,
         };
 
-        if is_oneway(way_info, profile) {
-            if way_info.tags.get("oneway").map_or(false, |v| v == "-1") {
-                continue;
-            }
+        if get_way_directionality(way_info, profile) == -1 {
+            continue;
         }
 
         if !is_turn_allowed(
@@ -659,7 +616,7 @@ fn process_edges(
         if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
             came_from.insert(edge.to_node, (current.node_id, edge.way_id));
             g_score.insert(edge.to_node, tentative_g_score);
-            if let Some(to_node) = graph.nodes_map.get(&edge.to_node) {
+            if let Some(to_node) = graph.nodes.get(&edge.to_node) {
                 let h_cost = heuristic_cost(to_node, end_node);
                 open_set.push(NodeWithPrevious {
                     node_id: edge.to_node,

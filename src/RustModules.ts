@@ -14,8 +14,7 @@ export const getNearestNodes: (
     profileId: number,
     lon: number,
     lat: number,
-    limit: number,
-    maxDistanceThreshold: number
+    limit: number
 ) => number[] = binding.getNearestNodes;
 
 export const getRoute: (

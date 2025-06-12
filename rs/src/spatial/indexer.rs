@@ -139,27 +139,14 @@ fn build_routing_graph(graph: &Graph) -> RouteGraph {
         adjacency_list_reverse.entry(*node_id).or_default();
     }
 
-    let ways_info: FxHashMap<i64, crate::routing::WayInfo> = graph
-        .ways
-        .iter()
-        .map(|(&way_id, way)| {
-            let tags_fx: FxHashMap<String, String> = way
-                .tags
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            (way_id, crate::routing::WayInfo { tags: tags_fx })
-        })
-        .collect();
-
     RouteGraph {
         adjacency_list,
         adjacency_list_reverse,
         prohibitory_restrictions,
         mandatory_from_via,
         mandatory_to_via,
-        nodes_map: FxHashMap::from_iter(graph.nodes.clone()),
-        ways_info,
+        nodes: FxHashMap::from_iter(graph.nodes.clone()),
+        ways: FxHashMap::from_iter(graph.ways.clone()),
     }
 }
 

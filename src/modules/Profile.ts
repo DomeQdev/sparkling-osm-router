@@ -86,10 +86,10 @@ class Profile {
         return null;
     }
 
-    getNearestNodes = ([lon, lat]: Location, limit: number, maxDistanceThreshold: number) => {
+    getNearestNodes = ([lon, lat]: Location, limit: number) => {
         if (this.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getNearestNodes(this.graphId, this.profileId, lon, lat, limit, maxDistanceThreshold);
+        return getNearestNodes(this.graphId, this.profileId, lon, lat, limit);
     };
 
     getRoute = async (startNode: number, endNode: number) => {

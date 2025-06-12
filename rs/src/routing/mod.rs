@@ -1,7 +1,7 @@
-mod algorithm;
+pub mod algorithm;
 
 use crate::core::errors::{GraphError, Result};
-use crate::core::types::{Graph, Node, Profile};
+use crate::core::types::{Graph, Node, Profile, Way};
 pub use algorithm::find_route_bidirectional_astar;
 use rayon;
 use rustc_hash::FxHashMap;
@@ -60,11 +60,6 @@ pub struct MandatoryTurnInfo {
     pub except_tags: Option<HashSet<String>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct WayInfo {
-    pub tags: FxHashMap<String, String>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct RouteGraph {
     pub adjacency_list: FxHashMap<i64, Vec<Edge>>,
@@ -72,8 +67,8 @@ pub struct RouteGraph {
     pub prohibitory_restrictions: FxHashMap<(i64, i64, i64), RestrictionDetail>,
     pub mandatory_from_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>>,
     pub mandatory_to_via: FxHashMap<(i64, i64), Vec<MandatoryTurnInfo>>,
-    pub nodes_map: FxHashMap<i64, Node>,
-    pub ways_info: FxHashMap<i64, WayInfo>,
+    pub nodes: FxHashMap<i64, Node>,
+    pub ways: FxHashMap<i64, Way>,
 }
 
 pub static ROUTING_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();

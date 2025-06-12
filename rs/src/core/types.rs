@@ -1,4 +1,3 @@
-use crate::core::errors::Result;
 use crate::routing::RouteGraph;
 use neon::prelude::*;
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
@@ -78,51 +77,6 @@ impl Graph {
             way_rtree: rstar::RTree::new(),
             route_graph: None,
         }
-    }
-
-    pub fn find_nearest_ways_and_nodes(
-        &self,
-        lon: f64,
-        lat: f64,
-        limit: usize,
-        _distance_threshold_multiplier: f64,
-        profile: &Profile,
-    ) -> Result<Vec<i64>> {
-        if self.way_rtree.size() == 0 {
-            return Ok(Vec::new());
-        }
-
-        let point = [lon, lat];
-        let mut nearest_nodes = Vec::new();
-        let mut count = 0;
-
-        for way_envelope in self.way_rtree.nearest_neighbor_iter(&point) {
-            if count >= limit {
-                break;
-            }
-
-            if let Some(way) = self.ways.get(&way_envelope.way_id) {
-                let mut way_accessible = true;
-                if let Some(access_tags) = &profile.access_tags {
-                    way_accessible = access_tags.iter().any(|tag| way.tags.contains_key(tag));
-                }
-
-                if way_accessible {
-                    for node_id in &way.node_refs {
-                        if count < limit {
-                            nearest_nodes.push(*node_id);
-                            count += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-            if count >= limit {
-                break;
-            }
-        }
-        Ok(nearest_nodes)
     }
 }
 
