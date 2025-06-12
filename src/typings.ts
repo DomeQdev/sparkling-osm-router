@@ -7,8 +7,7 @@ export interface RouteResult {
 
 export interface OsmNode {
     id: number;
-    lat: number;
-    lon: number;
+    location: Location;
     tags: Record<string, string>;
 }
 

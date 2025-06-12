@@ -215,8 +215,10 @@ fn get_node_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
 
         let lat_js = cx.number(node.lat);
         let lon_js = cx.number(node.lon);
-        js_object.set(&mut cx, "lat", lat_js)?;
-        js_object.set(&mut cx, "lon", lon_js)?;
+        let location_js_array = JsArray::new(&mut cx, 2);
+        location_js_array.set(&mut cx, 0, lon_js)?;
+        location_js_array.set(&mut cx, 1, lat_js)?;
+        js_object.set(&mut cx, "location", location_js_array)?;
 
         let tags_obj = cx.empty_object();
         for (key, value) in &node.tags {
@@ -562,8 +564,10 @@ fn search_nodes_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
                     js_tags.set(&mut cx, key.as_str(), value_js)?;
                 }
                 js_node.set(&mut cx, "id", id)?;
-                js_node.set(&mut cx, "lat", js_lat)?;
-                js_node.set(&mut cx, "lon", js_lon)?;
+                let js_location = JsArray::new(&mut cx, 2);
+                js_location.set(&mut cx, 0, js_lon)?;
+                js_location.set(&mut cx, 1, js_lat)?;
+                js_node.set(&mut cx, "location", js_location)?;
                 js_node.set(&mut cx, "tags", js_tags)?;
                 js_array.set(&mut cx, i as u32, js_node)?;
             }

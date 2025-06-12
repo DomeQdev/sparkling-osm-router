@@ -54,7 +54,7 @@ function findIntersection(
     return [(b2 * c1 - b1 * c2) / det, (a1 * c2 - a2 * c1) / det];
 }
 
-export default (points: Location[], offsetMeters: number, offsetSide: number): Location[] => {
+export default (points: Location[], offsetMeters: number = 1.5): Location[] => {
     if (points.length < 2) {
         return [];
     }
@@ -63,7 +63,7 @@ export default (points: Location[], offsetMeters: number, offsetSide: number): L
     const segments: Location[][] = [];
 
     for (let i = 0; i < pointsCount - 1; i++) {
-        segments.push(processPointSegment(points[i], points[i + 1], offsetMeters * offsetSide));
+        segments.push(processPointSegment(points[i], points[i + 1], offsetMeters));
     }
 
     const result: Location[] = [];

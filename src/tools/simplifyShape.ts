@@ -60,7 +60,7 @@ const rdpSimplify = (points: Location[], epsilon: number): Location[] => {
     return result;
 };
 
-export default (shapePoints: Location[], epsilon: number): Location[] => {
+export default (shapePoints: Location[], epsilon: number = 1e-5): Location[] => {
     if (!shapePoints?.length || epsilon <= 0) return shapePoints;
 
     return rdpSimplify(shapePoints, epsilon);

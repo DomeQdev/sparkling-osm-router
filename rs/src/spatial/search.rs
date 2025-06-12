@@ -57,9 +57,6 @@ impl Graph {
         }
 
         let point = [lon, lat];
-        
-        
-        
         let radius_degrees_sq = (radius_meters / 111_320.0).powi(2);
 
         let mut found_nodes = Vec::new();
@@ -68,7 +65,6 @@ impl Graph {
             .locate_within_distance(point, radius_degrees_sq)
         {
             if let Some(node) = self.nodes.get(&node_envelope.node_id) {
-                
                 let mut is_accessible = false;
                 for way in self.ways.values() {
                     if way.node_refs.contains(&node.id) {
@@ -78,6 +74,7 @@ impl Graph {
                         }
                     }
                 }
+
                 if is_accessible {
                     found_nodes.push(node.clone());
                 }
