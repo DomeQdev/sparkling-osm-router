@@ -7,7 +7,7 @@ import BaseProfile from "./Profile";
 export type GraphOptions = {
     filePath: string;
     overpassGraph?: {
-        query: string;
+        query: string[];
         bounds: Location[];
         ttlDays: number;
         server?: string;
@@ -82,8 +82,14 @@ const ensureOSMGraph = async ({ filePath, overpassGraph }: GraphOptions) => {
     }
 
     const query = `[out:xml][timeout:${overpassGraph.timeout || 1e4}];
-        ${overpassGraph.query}
-        (poly: "${overpassGraph.bounds.map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`).join(" ")}");
+        ${overpassGraph.query
+            .map(
+                (query) =>
+                    `${query}(poly: "${overpassGraph.bounds
+                        .map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`)
+                        .join(" ")}");`
+            )
+            .join("\n")}
 
         >->.n;
         <->.r;
