@@ -52,34 +52,31 @@ impl Graph {
         radius_meters: f64,
         profile: &Profile,
     ) -> Result<Vec<Node>> {
-        if self.node_rtree.size() == 0 {
+        if self.way_rtree.size() == 0 {
             return Ok(Vec::new());
         }
 
         let point = [lon, lat];
         let radius_degrees_sq = (radius_meters / 111_320.0).powi(2);
 
-        let mut found_nodes = Vec::new();
-        for node_envelope in self
-            .node_rtree
+        let mut found_nodes_map = std::collections::HashMap::new();
+
+        for way_envelope in self
+            .way_rtree
             .locate_within_distance(point, radius_degrees_sq)
         {
-            if let Some(node) = self.nodes.get(&node_envelope.node_id) {
-                let mut is_accessible = false;
-                for way in self.ways.values() {
-                    if way.node_refs.contains(&node.id) {
-                        if is_way_accessible(way, profile) {
-                            is_accessible = true;
-                            break;
+            if let Some(way) = self.ways.get(&way_envelope.way_id) {
+                if is_way_accessible(way, profile) {
+                    for node_id in &way.node_refs {
+                        if let Some(node) = self.nodes.get(node_id) {
+                            found_nodes_map.insert(node.id, node.clone());
                         }
                     }
                 }
-
-                if is_accessible {
-                    found_nodes.push(node.clone());
-                }
             }
         }
+
+        let found_nodes: Vec<Node> = found_nodes_map.values().cloned().collect();
         Ok(found_nodes)
     }
 

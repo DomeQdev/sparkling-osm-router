@@ -63,8 +63,6 @@ pub struct Graph {
     #[serde(skip)]
     pub way_rtree: RTree<WayEnvelope>,
     #[serde(skip)]
-    pub node_rtree: RTree<NodeEnvelope>,
-    #[serde(skip)]
     pub route_graph: Option<Arc<RouteGraph>>,
 }
 
@@ -77,7 +75,6 @@ impl Graph {
             ways: Default::default(),
             relations: Default::default(),
             way_rtree: rstar::RTree::new(),
-            node_rtree: rstar::RTree::new(),
             route_graph: None,
         }
     }
@@ -100,25 +97,5 @@ impl RTreeObject for WayEnvelope {
 
     fn envelope(&self) -> Self::Envelope {
         self.envelope.clone()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct NodeEnvelope {
-    pub node_id: i64,
-    pub envelope: AABB<[f64; 2]>,
-}
-
-impl rstar::RTreeObject for NodeEnvelope {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
-impl rstar::PointDistance for NodeEnvelope {
-    fn distance_2(&self, point: &[f64; 2]) -> f64 {
-        self.envelope.distance_2(point)
     }
 }

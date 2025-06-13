@@ -82,14 +82,14 @@ const ensureOSMGraph = async ({ filePath, overpassGraph }: GraphOptions) => {
     }
 
     const query = `[out:xml][timeout:${overpassGraph.timeout || 1e4}];
-        ${overpassGraph.query
+        (${overpassGraph.query
             .map(
                 (query) =>
                     `${query}(poly: "${overpassGraph.bounds
                         .map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`)
                         .join(" ")}");`
             )
-            .join("\n")}
+            .join("\n")});
 
         >->.n;
         <->.r;

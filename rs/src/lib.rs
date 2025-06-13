@@ -56,6 +56,8 @@ fn load_graph_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
         *gn.borrow_mut() = parsed_graph.nodes.clone();
     });
 
+    init_routing_thread_pool();
+
     let index_result = index_graph(parsed_graph);
     match index_result {
         Ok(indexed_graph) => {
@@ -151,8 +153,6 @@ fn get_route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
-
-    init_routing_thread_pool();
 
     ROUTING_THREAD_POOL.get().unwrap().spawn(move || {
         let graph_read_guard = graph_store.read().unwrap();
