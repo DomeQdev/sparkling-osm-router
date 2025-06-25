@@ -7,78 +7,41 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-struct NodeWithPrevious {
+struct State {
     node_id: i64,
-    previous_node_id: Option<i64>,
-    previous_way_id: Option<i64>,
+    prev_node_id: Option<i64>,
+    prev_way_id: Option<i64>,
     cost: i64,
     estimated_total_cost: i64,
 }
 
-impl Ord for NodeWithPrevious {
+impl Ord for State {
     fn cmp(&self, other: &Self) -> Ordering {
         other
             .estimated_total_cost
             .cmp(&self.estimated_total_cost)
-            .then_with(|| other.cost.cmp(&self.cost))
+            .then_with(|| self.cost.cmp(&other.cost))
     }
 }
 
-impl PartialOrd for NodeWithPrevious {
+impl PartialOrd for State {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
-struct VisitKey {
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+struct VisitedKey {
     node_id: i64,
-    prev_node: Option<i64>,
-    prev_way: Option<i64>,
+    prev_way_id: Option<i64>,
 }
 
-impl VisitKey {
-    fn new(node_id: i64, prev_node: Option<i64>, prev_way: Option<i64>) -> Self {
-        Self {
-            node_id,
-            prev_node,
-            prev_way,
-        }
-    }
-}
-
-pub fn find_route_bidirectional_astar(
+pub fn find_route_astar(
     graph: &RouteGraph,
     start_node_id: i64,
     end_node_id: i64,
-    profile: &crate::core::types::Profile,
+    profile: &Profile,
 ) -> Result<Option<RouteResult>> {
-    if !graph.adjacency_list.contains_key(&start_node_id)
-        || !graph.adjacency_list.contains_key(&end_node_id)
-    {
-        return Ok(None);
-    }
-
-    let start_node = match graph.nodes.get(&start_node_id) {
-        Some(node) => node,
-        None => {
-            return Err(GraphError::InvalidOsmData(format!(
-                "Start node {} not found",
-                start_node_id
-            )));
-        }
-    };
-
-    let end_node = match graph.nodes.get(&end_node_id) {
-        Some(node) => node,
-        None => {
-            return Err(GraphError::InvalidOsmData(format!(
-                "End node {} not found",
-                end_node_id
-            )));
-        }
-    };
-
     if start_node_id == end_node_id {
         return Ok(Some(RouteResult {
             nodes: vec![start_node_id],
@@ -86,546 +49,193 @@ pub fn find_route_bidirectional_astar(
         }));
     }
 
-    let mut open_set_forward = BinaryHeap::new();
-    let mut came_from_forward = FxHashMap::default();
-    let mut g_score_forward = FxHashMap::default();
-    let mut visited_nodes_forward = FxHashMap::default();
-    let mut best_node = None;
+    let start_node = graph.nodes.get(&start_node_id).ok_or_else(|| {
+        GraphError::InvalidOsmData(format!("Start node {} not found", start_node_id))
+    })?;
+    let end_node = graph
+        .nodes
+        .get(&end_node_id)
+        .ok_or_else(|| GraphError::InvalidOsmData(format!("End node {} not found", end_node_id)))?;
 
-    let mut visited_nodes_backward: FxHashMap<VisitKey, bool> = FxHashMap::default();
+    let mut open_set = BinaryHeap::new();
+    let mut g_score: FxHashMap<VisitedKey, i64> = FxHashMap::default();
+    let mut came_from: FxHashMap<VisitedKey, VisitedKey> = FxHashMap::default();
 
-    let mut best_cost = i64::MAX;
-
-    let mut open_set_backward = BinaryHeap::new();
-    let mut came_from_backward = FxHashMap::default();
-    let mut g_score_backward = FxHashMap::default();
-
-    g_score_forward.insert(start_node_id, 0);
-    g_score_backward.insert(end_node_id, 0);
-
-    open_set_forward.push(NodeWithPrevious {
+    let start_key = VisitedKey {
         node_id: start_node_id,
-        previous_node_id: None,
-        previous_way_id: None,
+        prev_way_id: None,
+    };
+    g_score.insert(start_key, 0);
+    open_set.push(State {
+        node_id: start_node_id,
+        prev_node_id: None,
+        prev_way_id: None,
         cost: 0,
         estimated_total_cost: heuristic_cost(start_node, end_node),
     });
 
-    open_set_backward.push(NodeWithPrevious {
-        node_id: end_node_id,
-        previous_node_id: None,
-        previous_way_id: None,
-        cost: 0,
-        estimated_total_cost: heuristic_cost(end_node, start_node),
-    });
-
-    let max_iterations = 250_000;
     let mut iterations = 0;
-    let mut forward_turn = true;
+    const MAX_ITERATIONS: u32 = 15_000_000;
 
-    while !open_set_forward.is_empty() && !open_set_backward.is_empty() {
-        iterations += 1;
-
-        if iterations > max_iterations {
+    while let Some(current) = open_set.pop() {
+        if iterations > MAX_ITERATIONS {
             return Ok(None);
         }
+        iterations += 1;
 
-        if forward_turn {
-            if let Some(current) = open_set_forward.pop() {
-                let current_node_id = current.node_id;
-                let current_g_score = *g_score_forward.get(&current_node_id).unwrap_or(&i64::MAX);
+        if current.node_id == end_node_id {
+            let final_key = VisitedKey {
+                node_id: current.node_id,
+                prev_way_id: current.prev_way_id,
+            };
+            return Ok(Some(reconstruct_path(final_key, &came_from)));
+        }
 
-                if let Some(&backward_cost) = g_score_backward.get(&current_node_id) {
-                    let total_cost = current_g_score + backward_cost;
-                    if total_cost < best_cost {
-                        best_cost = total_cost;
-                        best_node = Some(current_node_id);
-                    }
+        let current_key = VisitedKey {
+            node_id: current.node_id,
+            prev_way_id: current.prev_way_id,
+        };
+        if current.cost > *g_score.get(&current_key).unwrap_or(&i64::MAX) {
+            continue;
+        }
+
+        if let Some(edges) = graph.adjacency_list.get(&current.node_id) {
+            for edge in edges {
+                let way = graph.ways.get(&edge.way_id).unwrap();
+
+                let dir = get_way_directionality(way, profile);
+                if dir == -1 {
+                    continue;
                 }
-
-                if best_node.is_some() && current.cost > best_cost {
-                    break;
-                }
-
-                let visit_key = VisitKey::new(
-                    current_node_id,
-                    current.previous_node_id,
-                    current.previous_way_id,
-                );
-
-                if visited_nodes_forward.contains_key(&visit_key) {
+                if !is_way_accessible(way, profile) {
                     continue;
                 }
 
-                visited_nodes_forward.insert(visit_key, true);
-
-                if let Some(edges) = graph.adjacency_list.get(&current_node_id) {
-                    process_edges(
-                        graph,
-                        edges,
-                        current,
-                        end_node,
-                        &mut open_set_forward,
-                        &mut came_from_forward,
-                        &mut g_score_forward,
-                        current_g_score,
-                        profile,
-                    );
-                }
-            }
-        } else {
-            if let Some(current) = open_set_backward.pop() {
-                let current_node_id = current.node_id;
-                let current_g_score = *g_score_backward.get(&current_node_id).unwrap_or(&i64::MAX);
-
-                if let Some(&forward_cost) = g_score_forward.get(&current_node_id) {
-                    let total_cost = current_g_score + forward_cost;
-                    if total_cost < best_cost {
-                        best_cost = total_cost;
-                        best_node = Some(current_node_id);
-                    }
-                }
-
-                if best_node.is_some() && current.cost > best_cost {
-                    break;
-                }
-
-                let visit_key = VisitKey::new(
-                    current_node_id,
-                    current.previous_node_id,
-                    current.previous_way_id,
-                );
-
-                if visited_nodes_backward.contains_key(&visit_key) {
+                let edge_cost = calculate_edge_cost(graph, edge, profile);
+                if edge_cost.is_none() {
                     continue;
                 }
+                let edge_cost = edge_cost.unwrap();
+                let new_cost = current.cost.saturating_add(edge_cost);
 
-                visited_nodes_backward.insert(visit_key, true);
+                let neighbor_key = VisitedKey {
+                    node_id: edge.to_node,
+                    prev_way_id: Some(edge.way_id),
+                };
 
-                if let Some(_edges) = graph.adjacency_list_reverse.get(&current_node_id) {
-                    process_edges_reverse(
-                        graph,
-                        current,
-                        start_node,
-                        &mut open_set_backward,
-                        &mut came_from_backward,
-                        &mut g_score_backward,
-                        current_g_score,
-                        profile,
-                    );
+                if new_cost < *g_score.get(&neighbor_key).unwrap_or(&i64::MAX) {
+                    g_score.insert(neighbor_key, new_cost);
+                    came_from.insert(neighbor_key, current_key);
+
+                    let neighbor_node = graph.nodes.get(&edge.to_node).unwrap();
+                    let h_cost = heuristic_cost(neighbor_node, end_node);
+
+                    open_set.push(State {
+                        node_id: edge.to_node,
+                        prev_node_id: Some(current.node_id),
+                        prev_way_id: Some(edge.way_id),
+                        cost: new_cost,
+                        estimated_total_cost: new_cost.saturating_add(h_cost),
+                    });
                 }
             }
         }
-
-        forward_turn = !forward_turn;
-    }
-
-    if let Some(meeting_node) = best_node {
-        let (forward_nodes, forward_ways) =
-            reconstruct_path_forward(&came_from_forward, start_node_id, meeting_node);
-        let (mut backward_nodes, backward_ways) =
-            reconstruct_path_backward(&came_from_backward, end_node_id, meeting_node);
-
-        let mut result_nodes = forward_nodes;
-        backward_nodes.remove(0);
-        result_nodes.extend(backward_nodes);
-
-        let mut result_ways = forward_ways;
-        result_ways.extend(backward_ways);
-
-        return Ok(Some(RouteResult {
-            nodes: result_nodes,
-            ways: result_ways,
-        }));
     }
 
     Ok(None)
 }
 
-fn calculate_edge_cost(graph: &RouteGraph, edge: &Edge, profile: &Profile) -> i64 {
-    let way = match graph.ways.get(&edge.way_id) {
-        Some(info) => info,
-        None => return i64::MAX,
-    };
+fn reconstruct_path(
+    mut current_key: VisitedKey,
+    came_from: &FxHashMap<VisitedKey, VisitedKey>,
+) -> RouteResult {
+    let mut nodes = vec![current_key.node_id];
+    let mut ways = Vec::new();
 
-    if !is_way_accessible(way, profile) {
-        return i64::MAX;
-    }
-
-    let mut cost = edge.distance as i64;
-
-    let mut penalty_applied_specific = false;
-    if let Some(way_type_tag_value) = way.tags.get(&profile.key) {
-        if let Some(penalty_multiplier) = profile.penalties.penalties.get(way_type_tag_value) {
-            if *penalty_multiplier <= 0.0 {
-                return i64::MAX;
-            }
-            cost = (cost as f64 * penalty_multiplier) as i64;
-            penalty_applied_specific = true;
+    while let Some(prev_key) = came_from.get(&current_key) {
+        if let Some(way_id) = current_key.prev_way_id {
+            ways.push(way_id);
+        }
+        nodes.push(prev_key.node_id);
+        current_key = *prev_key;
+        if current_key.prev_way_id.is_none() {
+            break;
         }
     }
 
-    if !penalty_applied_specific {
-        if let Some(default_penalty_multiplier) = profile.penalties.default {
-            if default_penalty_multiplier <= 0.0 {
-                return i64::MAX;
-            }
-            cost = (cost as f64 * default_penalty_multiplier) as i64;
-        }
+    nodes.reverse();
+    ways.reverse();
+    RouteResult { nodes, ways }
+}
+
+fn calculate_edge_cost(graph: &RouteGraph, edge: &Edge, profile: &Profile) -> Option<i64> {
+    let way = graph.ways.get(&edge.way_id).unwrap();
+    let penalty = get_way_penalty(way, profile);
+
+    if penalty.is_none() {
+        return None;
     }
 
-    if cost == 0 && edge.distance > 0.0 {
-        cost = 1;
-    }
-
-    cost
+    return Some(((edge.distance) * penalty.unwrap()) as i64);
 }
 
 fn get_way_directionality(way: &Way, profile: &Profile) -> i8 {
     if way
         .tags
         .get("junction")
-        .map_or(false, |v| v == "roundabout")
+        .map_or(false, |v| v == "roundabout" || v == "circular")
     {
         return 1;
     }
 
-    if let Some(oneway_tags_config) = &profile.oneway_tags {
-        for tag_key in oneway_tags_config {
-            if let Some(tag_value) = way.tags.get(tag_key) {
-                match tag_value.as_str() {
-                    "yes" | "true" | "1" => return 1,
-                    "-1" => return -1,
-                    "no" | "false" | "0" => return 0,
-                    _ => {}
-                }
+    if let Some(oneway_tags) = &profile.oneway_tags {
+        for tag in oneway_tags {
+            if let Some(val) = way.tags.get(tag) {
+                return match val.as_str() {
+                    "yes" | "true" | "1" => 1,
+                    "-1" => -1,
+                    "no" | "false" | "0" => 0,
+                    _ => continue,
+                };
             }
         }
     }
-
     0
 }
 
-fn process_edges_reverse(
-    graph: &RouteGraph,
-    current: NodeWithPrevious,
-    target_node: &Node,
-    open_set: &mut BinaryHeap<NodeWithPrevious>,
-    came_from: &mut FxHashMap<i64, (i64, i64)>,
-    g_score: &mut FxHashMap<i64, i64>,
-    current_g_score: i64,
-    profile: &crate::core::types::Profile,
-) {
-    if let Some(reverse_edges) = graph.adjacency_list_reverse.get(&current.node_id) {
-        for edge in reverse_edges {
-            let to_node_id = edge.to_node;
-
-            if !is_turn_allowed_reverse(
-                graph,
-                current.previous_way_id,
-                current.previous_node_id,
-                current.node_id,
-                edge.way_id,
-                to_node_id,
-                profile,
-            ) {
-                continue;
-            }
-
-            let edge_cost = calculate_edge_cost(graph, edge, profile);
-            let tentative_g_score = current_g_score + edge_cost;
-
-            if tentative_g_score < *g_score.get(&to_node_id).unwrap_or(&i64::MAX) {
-                came_from.insert(to_node_id, (current.node_id, edge.way_id));
-                g_score.insert(to_node_id, tentative_g_score);
-
-                if let Some(node) = graph.nodes.get(&to_node_id) {
-                    let h_cost = heuristic_cost(node, target_node);
-
-                    open_set.push(NodeWithPrevious {
-                        node_id: to_node_id,
-                        previous_node_id: Some(current.node_id),
-                        previous_way_id: Some(edge.way_id),
-                        cost: tentative_g_score,
-                        estimated_total_cost: tentative_g_score + h_cost,
-                    });
-                }
-            }
-        }
-    }
-}
-
-fn is_turn_allowed_reverse(
-    graph: &RouteGraph,
-    previous_way_id: Option<i64>,
-    _prev_prev_node_id: Option<i64>,
-    current_node_id: i64,
-    next_way_id: i64,
-    _next_node_id: i64,
-    profile: &crate::core::types::Profile,
-) -> bool {
-    if previous_way_id.is_none() {
-        return true;
-    }
-
-    let prev_way_id_unwrapped = previous_way_id.unwrap();
-
-    if let Some(restriction_detail) =
-        graph
-            .prohibitory_restrictions
-            .get(&(next_way_id, current_node_id, prev_way_id_unwrapped))
-    {
-        if let Some(profile_except_tags) = &profile.except_tags {
-            if let Some(restriction_except_tags) = &restriction_detail.except_tags {
-                if profile_except_tags
-                    .iter()
-                    .any(|pet| restriction_except_tags.contains(pet))
-                {
-                    return true;
-                }
-            }
-        }
+pub fn is_way_accessible(way: &Way, profile: &Profile) -> bool {
+    if !way.tags.contains_key(&profile.key) {
         return false;
     }
 
-    if let Some(mandatory_turns) = graph
-        .mandatory_to_via
-        .get(&(prev_way_id_unwrapped, current_node_id))
-    {
-        let mut allowed_by_mandatory = false;
-        for mandatory_turn in mandatory_turns {
-            if mandatory_turn.target_way_id == next_way_id {
-                if let Some(profile_except_tags) = &profile.except_tags {
-                    if let Some(restriction_except_tags) = &mandatory_turn.except_tags {
-                        if profile_except_tags
-                            .iter()
-                            .any(|pet| restriction_except_tags.contains(pet))
-                        {
-                            continue;
-                        }
-                    }
-                }
-                allowed_by_mandatory = true;
-                break;
+    if let Some(access_tags) = &profile.access_tags {
+        for tag in access_tags.iter().rev() {
+            if let Some(val) = way.tags.get(tag) {
+                match val.as_str() {
+                    "no" | "private" | "false" | "use_sidepath" => return false,
+                    _ => return true,
+                };
             }
         }
-        return allowed_by_mandatory;
     }
 
     true
 }
 
-fn is_turn_allowed(
-    graph: &RouteGraph,
-    previous_way_id: Option<i64>,
-    _prev_prev_node_id: Option<i64>,
-    current_node_id: i64,
-    next_way_id: i64,
-    _next_node_id: i64,
-    profile: &crate::core::types::Profile,
-) -> bool {
-    if previous_way_id.is_none() {
-        return true;
+pub fn get_way_penalty(way: &Way, profile: &Profile) -> Option<f64> {
+    if !is_way_accessible(way, profile) {
+        return None;
     }
 
-    let prev_way_id_unwrapped = previous_way_id.unwrap();
-
-    if let Some(restriction_detail) =
-        graph
-            .prohibitory_restrictions
-            .get(&(prev_way_id_unwrapped, current_node_id, next_way_id))
-    {
-        if let Some(profile_except_tags) = &profile.except_tags {
-            if let Some(restriction_except_tags) = &restriction_detail.except_tags {
-                if profile_except_tags
-                    .iter()
-                    .any(|pet| restriction_except_tags.contains(pet))
-                {
-                    return true;
-                }
-            }
+    if let Some(tag_value) = way.tags.get(&profile.key) {
+        if let Some(penalty) = profile.penalties.penalties.get(tag_value) {
+            return Some(*penalty);
         }
-        return false;
     }
 
-    if let Some(mandatory_turns) = graph
-        .mandatory_from_via
-        .get(&(prev_way_id_unwrapped, current_node_id))
-    {
-        let mut allowed_by_mandatory = false;
-        for mandatory_turn in mandatory_turns {
-            if mandatory_turn.target_way_id == next_way_id {
-                if let Some(profile_except_tags) = &profile.except_tags {
-                    if let Some(restriction_except_tags) = &mandatory_turn.except_tags {
-                        if profile_except_tags
-                            .iter()
-                            .any(|pet| restriction_except_tags.contains(pet))
-                        {
-                            continue;
-                        }
-                    }
-                }
-                allowed_by_mandatory = true;
-                break;
-            }
-        }
-
-        return allowed_by_mandatory;
-    }
-
-    true
+    profile.penalties.default
 }
 
-fn reconstruct_path_forward(
-    came_from: &FxHashMap<i64, (i64, i64)>,
-    start_node_id: i64,
-    end_node_id: i64,
-) -> (Vec<i64>, Vec<i64>) {
-    let mut path_nodes = vec![end_node_id];
-    let mut path_ways = Vec::new();
-    let mut current = end_node_id;
-
-    while current != start_node_id {
-        if let Some(&(prev_node, way_id)) = came_from.get(&current) {
-            path_nodes.push(prev_node);
-            path_ways.push(way_id);
-            current = prev_node;
-        } else {
-            break;
-        }
-    }
-
-    path_nodes.reverse();
-    path_ways.reverse();
-
-    (path_nodes, path_ways)
-}
-
-fn reconstruct_path_backward(
-    came_from: &FxHashMap<i64, (i64, i64)>,
-    end_node_id: i64,
-    middle_node_id: i64,
-) -> (Vec<i64>, Vec<i64>) {
-    let mut path_nodes = vec![middle_node_id];
-    let mut path_ways = Vec::new();
-    let mut current = middle_node_id;
-
-    while current != end_node_id {
-        if let Some(&(prev_node, way_id)) = came_from.get(&current) {
-            path_nodes.push(prev_node);
-            path_ways.push(way_id);
-            current = prev_node;
-        } else {
-            break;
-        }
-    }
-
-    (path_nodes, path_ways)
-}
-
-pub fn is_way_accessible(way_info: &Way, profile: &Profile) -> bool {
-    let mut is_accessible = true;
-
-    if !profile.penalties.default.is_some()
-        && (!way_info.tags.contains_key(&profile.key)
-            || !profile
-                .penalties
-                .penalties
-                .contains_key(&way_info.tags[&profile.key]))
-    {
-        return false;
-    }
-
-    if let Some(access_tags_hierarchy) = &profile.access_tags {
-        for tag_key in access_tags_hierarchy {
-            if let Some(tag_value) = way_info.tags.get(tag_key) {
-                if tag_value == "no" || tag_value == "private" || tag_value == "false" {
-                    is_accessible = false;
-                    break;
-                } else if tag_value == "yes"
-                    || tag_value == "designated"
-                    || tag_value == "true"
-                    || tag_value == "permissive"
-                {
-                    is_accessible = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    is_accessible
-}
-
-fn heuristic_cost(node: &Node, end_node: &Node) -> i64 {
-    let distance = estimate_distance(node, end_node);
-    let heuristic_factor = 25.0;
-    return (distance * 1000.0 * heuristic_factor) as i64;
-}
-
-fn estimate_distance(node1: &Node, node2: &Node) -> f64 {
-    if (node1.lat - node2.lat).abs() < 0.1 && (node1.lon - node2.lon).abs() < 0.1 {
-        let lat_avg = (node1.lat + node2.lat) / 2.0;
-        let lat_factor = lat_avg.to_radians().cos();
-        let d_lat = (node1.lat - node2.lat).abs();
-        let d_lon = (node1.lon - node2.lon).abs() * lat_factor;
-
-        return 111.2 * (d_lat * d_lat + d_lon * d_lon).sqrt();
-    }
-    haversine_distance(node1.lat, node1.lon, node2.lat, node2.lon)
-}
-
-fn process_edges(
-    graph: &RouteGraph,
-    edges: &[Edge],
-    current: NodeWithPrevious,
-    end_node: &Node,
-    open_set: &mut BinaryHeap<NodeWithPrevious>,
-    came_from: &mut FxHashMap<i64, (i64, i64)>,
-    g_score: &mut FxHashMap<i64, i64>,
-    current_g_score: i64,
-    profile: &Profile,
-) {
-    for edge in edges {
-        let to_node_id = edge.to_node;
-
-        let way_info = match graph.ways.get(&edge.way_id) {
-            Some(info) => info,
-            None => continue,
-        };
-
-        if get_way_directionality(way_info, profile) == -1 {
-            continue;
-        }
-
-        if !is_turn_allowed(
-            graph,
-            current.previous_way_id,
-            current.previous_node_id,
-            current.node_id,
-            edge.way_id,
-            to_node_id,
-            profile,
-        ) {
-            continue;
-        }
-
-        let edge_cost = calculate_edge_cost(graph, edge, profile);
-        let tentative_g_score = current_g_score + edge_cost;
-
-        if tentative_g_score < *g_score.get(&edge.to_node).unwrap_or(&i64::MAX) {
-            came_from.insert(edge.to_node, (current.node_id, edge.way_id));
-            g_score.insert(edge.to_node, tentative_g_score);
-            if let Some(to_node) = graph.nodes.get(&edge.to_node) {
-                let h_cost = heuristic_cost(to_node, end_node);
-                open_set.push(NodeWithPrevious {
-                    node_id: edge.to_node,
-                    previous_node_id: Some(current.node_id),
-                    previous_way_id: Some(edge.way_id),
-                    cost: tentative_g_score,
-                    estimated_total_cost: tentative_g_score + h_cost,
-                });
-            }
-        }
-    }
+fn heuristic_cost(a: &Node, b: &Node) -> i64 {
+    (haversine_distance(a.lat, a.lon, b.lat, b.lon) * 1000.0 * 25.0) as i64
 }

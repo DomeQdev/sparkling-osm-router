@@ -9,8 +9,8 @@ use lazy_static::lazy_static;
 use neon::prelude::*;
 use parser::parse_osm_xml;
 use queue::{RouteQueue, RouteRequest};
-use routing::{init_routing_thread_pool, ROUTING_THREAD_POOL};
-use spatial::indexer::{index_graph, GRAPH_NODES};
+use routing::init_routing_thread_pool;
+use spatial::indexer::index_graph;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::runtime::Runtime;
@@ -30,45 +30,28 @@ fn load_graph_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let file_path_js = cx.argument::<JsString>(0)?;
     let file_path = file_path_js.value(&mut cx);
 
-    let graph = Graph::new();
-    let graph_arc = Arc::new(RwLock::new(graph));
-
     let graph_id = unsafe {
         let id = NEXT_GRAPH_ID;
         NEXT_GRAPH_ID += 1;
         id
     };
 
-    GRAPH_STORAGE
-        .lock()
-        .unwrap()
-        .insert(graph_id, graph_arc.clone());
-
     let parsed_graph = match parse_osm_xml(&file_path) {
         Ok(g) => g,
         Err(parse_err) => {
-            GRAPH_STORAGE.lock().unwrap().remove(&graph_id);
             return cx.throw_error(&format!("OSM XML parsing failed: {}", parse_err));
         }
     };
 
-    GRAPH_NODES.with(|gn| {
-        *gn.borrow_mut() = parsed_graph.nodes.clone();
-    });
-
     init_routing_thread_pool();
 
-    let index_result = index_graph(parsed_graph);
-    match index_result {
+    match index_graph(parsed_graph) {
         Ok(indexed_graph) => {
-            let mut graph_write_guard = graph_arc.write().unwrap();
-            *graph_write_guard = indexed_graph;
+            let graph_arc = Arc::new(RwLock::new(indexed_graph));
+            GRAPH_STORAGE.lock().unwrap().insert(graph_id, graph_arc);
             Ok(cx.number(graph_id as f64))
         }
-        Err(index_err) => {
-            GRAPH_STORAGE.lock().unwrap().remove(&graph_id);
-            cx.throw_error(&format!("Graph indexing failed: {}", index_err))
-        }
+        Err(index_err) => cx.throw_error(&format!("Graph indexing failed: {}", index_err)),
     }
 }
 
@@ -154,7 +137,7 @@ fn get_route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
-    ROUTING_THREAD_POOL.get().unwrap().spawn(move || {
+    routing::ROUTING_THREAD_POOL.get().unwrap().spawn(move || {
         let graph_read_guard = graph_store.read().unwrap();
         let async_result = TOKIO_RUNTIME
             .block_on(async { graph_read_guard.route(start_node, end_node, &profile).await });
