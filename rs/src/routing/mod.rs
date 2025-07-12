@@ -14,6 +14,7 @@ impl GraphContainer {
         let route_graph = self.profiles.get(profile_id).ok_or_else(|| {
             crate::core::errors::GraphError::ProfileNotFound(profile_id.to_string())
         })?;
+        // ZMIANA: Przekazujemy ID w formacie i64, konwersja nastąpi wewnątrz algorytmu
         find_route_astar(route_graph, start_node_id, end_node_id)
     }
 }

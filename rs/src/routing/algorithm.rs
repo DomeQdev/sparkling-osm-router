@@ -9,7 +9,7 @@ use std::collections::BinaryHeap;
 struct State {
     cost: u32,
     estimated_total_cost: u32,
-    node_id: i64,
+    node_id: u32, // ZMIANA: Praca na wewnętrznych ID
     prev_external_id: Option<i64>,
 }
 
@@ -30,21 +30,27 @@ impl PartialOrd for State {
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct VisitedKey {
-    node_id: i64,
+    node_id: u32, // ZMIANA: Praca na wewnętrznych ID
     prev_external_id: Option<i64>,
 }
 
 pub fn find_route_astar(
     graph: &ProcessedGraph,
-    start_node_id: i64,
-    end_node_id: i64,
+    start_osm_id: i64,
+    end_osm_id: i64,
 ) -> Result<Option<Vec<i64>>> {
-    let start_node = graph.nodes.get(&start_node_id).ok_or_else(|| {
-        GraphError::RoutingError(format!("Start node {} not in graph", start_node_id))
-    })?;
-    let end_node = graph.nodes.get(&end_node_id).ok_or_else(|| {
-        GraphError::RoutingError(format!("End node {} not in graph", end_node_id))
-    })?;
+    // ZMIANA: Konwersja z zewnętrznych OSM ID na wewnętrzne ID
+    let start_node_id = *graph
+        .node_id_map
+        .get(&start_osm_id)
+        .ok_or_else(|| GraphError::RoutingError(format!("Start node {} not in graph", start_osm_id)))?;
+    let end_node_id = *graph
+        .node_id_map
+        .get(&end_osm_id)
+        .ok_or_else(|| GraphError::RoutingError(format!("End node {} not in graph", end_osm_id)))?;
+
+    let start_node = &graph.nodes[start_node_id as usize];
+    let end_node = &graph.nodes[end_node_id as usize];
 
     let mut open_set = BinaryHeap::new();
     let mut g_score: FxHashMap<VisitedKey, u32> = FxHashMap::default();
@@ -65,13 +71,19 @@ pub fn find_route_astar(
 
     while let Some(current) = open_set.pop() {
         if current.node_id == end_node_id {
-            return Ok(Some(reconstruct_path(
+            let path_internal = reconstruct_path(
                 VisitedKey {
                     node_id: current.node_id,
                     prev_external_id: current.prev_external_id,
                 },
                 &came_from,
-            )));
+            );
+            // ZMIANA: Konwersja ścieżki z wewnętrznych ID na zewnętrzne OSM ID
+            let path_external = path_internal
+                .iter()
+                .map(|&id| graph.nodes[id as usize].external_id)
+                .collect();
+            return Ok(Some(path_external));
         }
 
         let current_key = VisitedKey {
@@ -82,32 +94,31 @@ pub fn find_route_astar(
             continue;
         }
 
-        let current_node_external_id = graph.nodes.get(&current.node_id).unwrap().external_id;
+        let current_node_external_id = graph.nodes[current.node_id as usize].external_id;
 
-        if let Some(edges) = graph.edges.get(&current.node_id) {
-            for (&neighbor_id, &cost) in edges.iter() {
-                let neighbor_node = graph.nodes.get(&neighbor_id).unwrap();
-                if Some(neighbor_node.external_id) == current.prev_external_id {
-                    continue;
-                }
+        // ZMIANA: Użycie nowej, szybkiej metody `neighbors`
+        for &(neighbor_id, cost) in graph.neighbors(current.node_id) {
+            let neighbor_node = &graph.nodes[neighbor_id as usize];
+            if Some(neighbor_node.external_id) == current.prev_external_id {
+                continue;
+            }
 
-                let new_cost = current.cost.saturating_add(cost);
-                let neighbor_key = VisitedKey {
+            let new_cost = current.cost.saturating_add(cost);
+            let neighbor_key = VisitedKey {
+                node_id: neighbor_id,
+                prev_external_id: Some(current_node_external_id),
+            };
+
+            if new_cost < *g_score.get(&neighbor_key).unwrap_or(&u32::MAX) {
+                g_score.insert(neighbor_key, new_cost);
+                came_from.insert(neighbor_key, current_key);
+                let h_cost = heuristic_cost(neighbor_node, end_node);
+                open_set.push(State {
+                    cost: new_cost,
+                    estimated_total_cost: new_cost.saturating_add(h_cost),
                     node_id: neighbor_id,
                     prev_external_id: Some(current_node_external_id),
-                };
-
-                if new_cost < *g_score.get(&neighbor_key).unwrap_or(&u32::MAX) {
-                    g_score.insert(neighbor_key, new_cost);
-                    came_from.insert(neighbor_key, current_key);
-                    let h_cost = heuristic_cost(neighbor_node, end_node);
-                    open_set.push(State {
-                        cost: new_cost,
-                        estimated_total_cost: new_cost.saturating_add(h_cost),
-                        node_id: neighbor_id,
-                        prev_external_id: Some(current_node_external_id),
-                    });
-                }
+                });
             }
         }
     }
@@ -117,7 +128,7 @@ pub fn find_route_astar(
 fn reconstruct_path(
     mut current_key: VisitedKey,
     came_from: &FxHashMap<VisitedKey, VisitedKey>,
-) -> Vec<i64> {
+) -> Vec<u32> { // ZMIANA: Zwraca Vec<u32>
     let mut path = vec![current_key.node_id];
     while let Some(&prev_key) = came_from.get(&current_key) {
         path.push(prev_key.node_id);

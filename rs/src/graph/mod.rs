@@ -1,11 +1,12 @@
 use crate::core::errors::{GraphError, Result};
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RouteNode {
-    pub id: i64,
+    pub id: u32,
     pub external_id: i64,
     pub lat: f64,
     pub lon: f64,
@@ -29,8 +30,13 @@ impl PointDistance for RouteNode {
 
 #[derive(Serialize, Deserialize)]
 pub struct ProcessedGraph {
-    pub nodes: HashMap<i64, RouteNode>,
-    pub edges: HashMap<i64, HashMap<i64, u32>>,
+    pub nodes: Vec<RouteNode>,
+    pub offsets: Vec<usize>,
+    pub edges: Vec<(u32, u32)>,
+
+    #[serde(skip)]
+    pub node_id_map: FxHashMap<i64, u32>,
+
     #[serde(skip)]
     pub spatial_index: RTree<RouteNode>,
 }
@@ -38,17 +44,27 @@ pub struct ProcessedGraph {
 impl ProcessedGraph {
     pub fn new() -> Self {
         ProcessedGraph {
-            nodes: HashMap::new(),
-            edges: HashMap::new(),
+            nodes: Vec::new(),
+            offsets: Vec::new(),
+            edges: Vec::new(),
+            node_id_map: FxHashMap::default(),
             spatial_index: RTree::new(),
         }
     }
 
-    pub fn build_spatial_index(&mut self) {
+    pub fn neighbors(&self, node_id: u32) -> &[(u32, u32)] {
+        let start = self.offsets[node_id as usize];
+        let end = self.offsets[(node_id as usize) + 1];
+        &self.edges[start..end]
+    }
+
+    pub fn build_indices(&mut self) {
+        self.node_id_map = self.nodes.iter().map(|n| (n.external_id, n.id)).collect();
+
         let points: Vec<RouteNode> = self
             .nodes
-            .values()
-            .filter(|n| n.id == n.external_id)
+            .iter()
+            .filter(|n| n.external_id < MAX_NODE_ID)
             .cloned()
             .collect();
         self.spatial_index = RTree::bulk_load(points);
@@ -57,10 +73,12 @@ impl ProcessedGraph {
     pub fn find_nearest_node(&self, lon: f64, lat: f64) -> Result<i64> {
         self.spatial_index
             .nearest_neighbor(&[lon, lat])
-            .map(|node| node.id)
+            .map(|node| node.external_id)
             .ok_or_else(|| GraphError::RoutingError("No nodes found in spatial index.".to_string()))
     }
 }
+
+pub const MAX_NODE_ID: i64 = 0x0008_0000_0000_0000;
 
 #[derive(Serialize, Deserialize)]
 pub struct GraphContainer {
@@ -74,9 +92,9 @@ impl GraphContainer {
         }
     }
 
-    pub fn build_all_spatial_indices(&mut self) {
+    pub fn build_all_indices(&mut self) {
         for graph in self.profiles.values_mut() {
-            graph.build_spatial_index();
+            graph.build_indices();
         }
     }
 }

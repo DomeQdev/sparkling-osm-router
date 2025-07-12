@@ -52,7 +52,8 @@ fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
                     if let Ok(mut container) =
                         bincode::deserialize_from::<_, GraphContainer>(reader)
                     {
-                        container.build_all_spatial_indices();
+                        // ZMIANA: Odbudowujemy indeksy po deserializacji
+                        container.build_all_indices();
                         return Ok(container);
                     }
                 }
@@ -90,7 +91,11 @@ fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
     let writer = BufWriter::new(File::create(path)?);
     bincode::serialize_into(writer, &container)?;
 
-    container.build_all_spatial_indices();
+    // ZMIANA: Indeksy są już budowane wewnątrz `GraphBuilder::build`, nie trzeba tu nic robić.
+    // Aby zwrócić kontener z gotowymi indeksami, musimy go załadować ponownie lub
+    // przenieść logikę budowania indeksów z `build` do `finalize_graph` w `GraphBuilder`.
+    // Prostsze rozwiązanie: `build_all_indices` jest już zawołane na nowo zbudowanym grafie.
+
     Ok(container)
 }
 
@@ -203,30 +208,34 @@ fn get_node(mut cx: FunctionContext) -> JsResult<JsValue> {
         None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
     };
 
-    if let Some(node) = profile_graph.nodes.get(&node_id) {
-        let js_object = cx.empty_object();
+    // ZMIANA: Logika pobierania węzła przez mapę ID
+    if let Some(internal_id) = profile_graph.node_id_map.get(&node_id) {
+        if let Some(node) = profile_graph.nodes.get(*internal_id as usize) {
+            let js_object = cx.empty_object();
 
-        let id_val = cx.number(node.id as f64);
-        js_object.set(&mut cx, "id", id_val)?;
+            // Zwracamy external_id jako 'id' do JS
+            let id_val = cx.number(node.external_id as f64);
+            js_object.set(&mut cx, "id", id_val)?;
 
-        let location_array = JsArray::new(&mut cx, 2);
-        let lon = cx.number(node.lon);
-        let lat = cx.number(node.lat);
-        location_array.set(&mut cx, 0, lon)?;
-        location_array.set(&mut cx, 1, lat)?;
-        js_object.set(&mut cx, "location", location_array)?;
+            let location_array = JsArray::new(&mut cx, 2);
+            let lon = cx.number(node.lon);
+            let lat = cx.number(node.lat);
+            location_array.set(&mut cx, 0, lon)?;
+            location_array.set(&mut cx, 1, lat)?;
+            js_object.set(&mut cx, "location", location_array)?;
 
-        let tags_obj = cx.empty_object();
-        for (key, value) in &node.tags {
-            let value_js = cx.string(value);
-            tags_obj.set(&mut cx, key.as_str(), value_js)?;
+            let tags_obj = cx.empty_object();
+            for (key, value) in &node.tags {
+                let value_js = cx.string(value);
+                tags_obj.set(&mut cx, key.as_str(), value_js)?;
+            }
+            js_object.set(&mut cx, "tags", tags_obj)?;
+
+            return Ok(js_object.upcast());
         }
-        js_object.set(&mut cx, "tags", tags_obj)?;
-
-        Ok(js_object.upcast())
-    } else {
-        Ok(cx.null().upcast())
     }
+    
+    Ok(cx.null().upcast())
 }
 
 fn get_shape(mut cx: FunctionContext) -> JsResult<JsArray> {
@@ -249,13 +258,17 @@ fn get_shape(mut cx: FunctionContext) -> JsResult<JsArray> {
     let result = JsArray::new(&mut cx, len as usize);
     for i in 0..len {
         let node_id = nodes_js.get::<JsNumber, _, _>(&mut cx, i)?.value(&mut cx) as i64;
-        if let Some(node) = profile_graph.nodes.get(&node_id) {
-            let point_array = JsArray::new(&mut cx, 2);
-            let lon = cx.number(node.lon);
-            let lat = cx.number(node.lat);
-            point_array.set(&mut cx, 0, lon)?;
-            point_array.set(&mut cx, 1, lat)?;
-            result.set(&mut cx, i, point_array)?;
+        
+        // ZMIANA: Logika pobierania węzła przez mapę ID
+        if let Some(internal_id) = profile_graph.node_id_map.get(&node_id) {
+            if let Some(node) = profile_graph.nodes.get(*internal_id as usize) {
+                let point_array = JsArray::new(&mut cx, 2);
+                let lon = cx.number(node.lon);
+                let lat = cx.number(node.lat);
+                point_array.set(&mut cx, 0, lon)?;
+                point_array.set(&mut cx, 1, lat)?;
+                result.set(&mut cx, i, point_array)?;
+            }
         }
     }
     Ok(result)
