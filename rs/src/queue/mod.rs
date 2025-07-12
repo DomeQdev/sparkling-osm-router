@@ -1,3 +1,4 @@
+use crate::graph::GraphContainer;
 use neon::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -14,20 +15,22 @@ pub struct RouteQueue {
     queue: Arc<Mutex<VecDeque<RouteRequest>>>,
     active_count: Arc<Mutex<usize>>,
     pub max_concurrency: usize,
-    graph: Arc<std::sync::RwLock<crate::core::types::Graph>>,
-    profile: Arc<crate::core::types::Profile>,
+    graph_container: Arc<std::sync::RwLock<GraphContainer>>,
+    profile_id: String,
 }
+
+impl Finalize for RouteQueue {}
 
 impl RouteQueue {
     pub fn new(
-        graph: Arc<std::sync::RwLock<crate::core::types::Graph>>,
-        profile: Arc<crate::core::types::Profile>,
+        graph_container: Arc<std::sync::RwLock<GraphContainer>>,
+        profile_id: String,
         max_concurrency: Option<usize>,
     ) -> Self {
         let actual_concurrency = max_concurrency.unwrap_or_else(|| {
             let cpu_count = num_cpus::get();
             if cpu_count > 1 {
-                cpu_count - 1
+                cpu_count.saturating_sub(1)
             } else {
                 1
             }
@@ -37,8 +40,8 @@ impl RouteQueue {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             active_count: Arc::new(Mutex::new(0)),
             max_concurrency: actual_concurrency,
-            graph,
-            profile,
+            graph_container,
+            profile_id,
         }
     }
 
@@ -48,152 +51,75 @@ impl RouteQueue {
         } else {
             request.id.clone()
         };
-
         let mut queue = self.queue.lock().unwrap();
-        queue.push_back(request);
-
+        queue.push_back(RouteRequest {
+            id: id.clone(),
+            ..request
+        });
         id
     }
 
     pub fn process_next(&self, channel: Channel, callback: Root<JsFunction>) -> bool {
-        let can_process = {
-            let active_count = self.active_count.lock().unwrap();
-            *active_count < self.max_concurrency
-        };
-
+        let can_process = *self.active_count.lock().unwrap() < self.max_concurrency;
         if !can_process {
             return false;
         }
 
-        let request = {
-            let mut queue = self.queue.lock().unwrap();
-            queue.pop_front()
-        };
+        let request = { self.queue.lock().unwrap().pop_front() };
 
         if let Some(request) = request {
-            {
-                let mut active_count = self.active_count.lock().unwrap();
-                *active_count += 1;
-            }
+            *self.active_count.lock().unwrap() += 1;
 
             let self_clone = self.clone();
-            let graph_clone = self.graph.clone();
-            let profile_clone = self.profile.clone();
-            let request_id = request.id.clone();
-            let start_node = request.start_node;
-            let end_node = request.end_node;
-            let callback_clone = callback;
-            let channel_clone = channel;
+            let graph_clone = self.graph_container.clone();
 
-            crate::routing::ROUTING_THREAD_POOL
-                .get()
-                .unwrap()
-                .spawn(move || {
-                    let result = {
-                        let graph_guard = graph_clone.read().unwrap();
+            crate::ROUTING_THREAD_POOL.spawn(move || {
+                let result = {
+                    let graph_guard = graph_clone.read().unwrap();
+                    graph_guard.route(&self_clone.profile_id, request.start_node, request.end_node)
+                };
 
-                        crate::TOKIO_RUNTIME.block_on(async {
-                            graph_guard
-                                .route(start_node, end_node, &profile_clone)
-                                .await
-                        })
+                channel.send(move |mut cx| {
+                    let callback = callback.into_inner(&mut cx);
+                    let this = cx.undefined();
+                    let id_js = cx.string(request.id);
+
+                    let result_value: Handle<JsValue> = match result {
+                        Ok(Some(nodes)) => {
+                            let js_result = cx.empty_object();
+                            let js_nodes = JsArray::new(&mut cx, nodes.len());
+                            for (i, node_id) in nodes.iter().enumerate() {
+                                let js_node = cx.number(*node_id as f64);
+                                js_nodes.set(&mut cx, i as u32, js_node).unwrap();
+                            }
+                            js_result.set(&mut cx, "nodes", js_nodes).unwrap();
+                            js_result.upcast()
+                        }
+                        Ok(None) => cx.null().upcast(),
+                        Err(e) => cx.error(e.to_string())?.upcast(),
                     };
 
-                    channel_clone.send(move |mut cx| {
-                        let callback = callback_clone.into_inner(&mut cx);
-                        let this = cx.undefined();
+                    let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
+                    let _ = callback.call(&mut cx, this, args);
 
-                        let id_js = cx.string(request_id);
-
-                        let result_value = match result {
-                            Ok(Some(route_result)) => {
-                                let js_result = cx.empty_object();
-
-                                let nodes = route_result.nodes;
-                                let js_nodes = JsArray::new(&mut cx, nodes.len());
-                                for (i, node_id) in nodes.iter().enumerate() {
-                                    let js_node = cx.number(*node_id as f64);
-                                    js_nodes.set(&mut cx, i as u32, js_node).unwrap();
-                                }
-                                js_result.set(&mut cx, "nodes", js_nodes).unwrap();
-
-                                let ways = route_result.ways;
-                                let js_ways = JsArray::new(&mut cx, ways.len());
-                                for (i, way_id) in ways.iter().enumerate() {
-                                    let js_way = cx.number(*way_id as f64);
-                                    js_ways.set(&mut cx, i as u32, js_way).unwrap();
-                                }
-                                js_result.set(&mut cx, "ways", js_ways).unwrap();
-
-                                js_result.upcast::<JsValue>()
-                            }
-                            Ok(None) => cx.null().upcast::<JsValue>(),
-                            Err(e) => {
-                                let err = cx.error(e.to_string()).unwrap();
-                                err.upcast::<JsValue>()
-                            }
-                        };
-
-                        let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
-
-                        let _ = callback.call(&mut cx, this, args);
-
-                        {
-                            let mut active_count = self_clone.active_count.lock().unwrap();
-                            *active_count -= 1;
-                        }
-
-                        Ok(())
-                    });
+                    *self_clone.active_count.lock().unwrap() -= 1;
+                    Ok(())
                 });
-
-            return true;
+            });
+            true
+        } else {
+            false
         }
-
-        false
-    }
-
-    pub fn start_processing<'a, C: Context<'a>>(
-        &self,
-        cx: &mut C,
-        channel: Channel,
-        callback: Root<JsFunction>,
-        count: usize,
-    ) -> usize {
-        let queue_size = {
-            let queue = self.queue.lock().unwrap();
-            queue.len()
-        };
-
-        let tasks_to_start = count.min(queue_size);
-
-        let mut callbacks = Vec::with_capacity(tasks_to_start);
-        for _ in 0..tasks_to_start {
-            callbacks.push(callback.clone(cx));
-        }
-
-        for callback_clone in callbacks {
-            self.process_next(channel.clone(), callback_clone);
-        }
-
-        tasks_to_start
-    }
-
-    pub fn is_empty(&self) -> bool {
-        let queue_size = self.queue.lock().unwrap().len();
-        let active_count = *self.active_count.lock().unwrap();
-
-        queue_size == 0 && active_count == 0
     }
 
     pub fn queue_size(&self) -> usize {
-        let queue = self.queue.lock().unwrap();
-        queue.len()
+        self.queue.lock().unwrap().len()
     }
-
     pub fn active_count(&self) -> usize {
-        let active_count = self.active_count.lock().unwrap();
-        *active_count
+        *self.active_count.lock().unwrap()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.queue_size() == 0 && self.active_count() == 0
     }
 }
 
@@ -203,8 +129,8 @@ impl Clone for RouteQueue {
             queue: self.queue.clone(),
             active_count: self.active_count.clone(),
             max_concurrency: self.max_concurrency,
-            graph: self.graph.clone(),
-            profile: self.profile.clone(),
+            graph_container: self.graph_container.clone(),
+            profile_id: self.profile_id.clone(),
         }
     }
 }

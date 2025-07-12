@@ -1,15 +1,15 @@
-import { getNode, getShape, getWay, loadGraph, unloadGraph } from "../RustModules";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "fs";
-import { Location } from "../typings";
+import { loadGraph, unloadGraph } from "../RustModules";
+import Profile, { ProfileOptions } from "./Profile";
+import { Location, RawProfile } from "../typings";
+import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
-import BaseProfile from "./Profile";
 
 export type GraphOptions = {
     filePath: string;
-    overpassGraph?: {
+    ttlDays: number;
+    overpassGraph: {
         query: string[];
         bounds: Location[];
-        ttlDays: number;
         server?: string;
         timeout?: number;
         retries?: number;
@@ -18,17 +18,20 @@ export type GraphOptions = {
 };
 
 class Graph {
-    private options: GraphOptions;
     public graphId: number | null = null;
-    public Profile: typeof BaseProfile;
+    public Profile: typeof Profile;
+    private options: GraphOptions;
+    private profiles: RawProfile[] = [];
 
     constructor(options: GraphOptions) {
         const parentGraph = this;
         this.options = options;
 
-        this.Profile = class Profile extends BaseProfile {
-            get graph() {
-                return parentGraph;
+        this.Profile = class extends Profile {
+            constructor(options: ProfileOptions) {
+                super(options);
+                this.graph = parentGraph;
+                parentGraph.profiles.push(this.rawProfile);
             }
         };
     }
@@ -36,11 +39,19 @@ class Graph {
     loadGraph = async () => {
         if (this.graphId !== null) return this.graphId;
 
-        if (this.options.overpassGraph) {
-            await ensureOSMGraph(this.options);
+        const dir = dirname(this.options.filePath);
+        if (!existsSync(dir)) {
+            mkdirSync(dir, { recursive: true });
         }
 
-        return (this.graphId = loadGraph(this.options.filePath));
+        return (this.graphId = loadGraph(
+            JSON.stringify({
+                file_path: this.options.filePath,
+                ttl_days: this.options.ttlDays,
+                profiles: this.profiles,
+                overpass: this.overpassConfig,
+            })
+        ));
     };
 
     unloadGraph = () => {
@@ -49,83 +60,27 @@ class Graph {
         return unloadGraph(this.graphId);
     };
 
-    getNodes = ({ nodes }: { nodes: number[] }) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+    private get overpassConfig() {
+        const overpassOptions = this.options.overpassGraph;
+        const bounds = overpassOptions.bounds
+            .map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`)
+            .join(" ");
 
-        return nodes.map((node) => getNode(this.graphId!, node));
-    };
+        const query = `[out:xml][timeout:${overpassOptions.timeout || 1e4}];
+            (${overpassOptions.query.map((query) => `${query}(poly: "${bounds}");`).join("\n")});
 
-    getWays = ({ ways }: { ways: number[] }) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
+            >->.n;
+            <->.r;
+            (._;.n;.r;);
+        out;`;
 
-        return ways.map((way) => getWay(this.graphId!, way));
-    };
-
-    getShape = ({ nodes }: { nodes: number[] }) => {
-        if (this.graphId === null) throw new Error("Graph is not loaded.");
-
-        return getShape(this.graphId!, nodes);
-    };
+        return {
+            query,
+            server: overpassOptions.server || "https://overpass.private.coffee",
+            retries: overpassOptions.retries || 3,
+            retry_delay: overpassOptions.retryDelay || 1000,
+        };
+    }
 }
-
-const ensureOSMGraph = async ({ filePath, overpassGraph }: GraphOptions) => {
-    if (!overpassGraph) return;
-
-    const dir = dirname(filePath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    if (
-        existsSync(filePath) &&
-        statSync(filePath).mtimeMs > Date.now() - overpassGraph.ttlDays * 24 * 60 * 60 * 1000
-    ) {
-        return;
-    }
-
-    const query = `[out:xml][timeout:${overpassGraph.timeout || 1e4}];
-        (${overpassGraph.query
-            .map(
-                (query) =>
-                    `${query}(poly: "${overpassGraph.bounds
-                        .map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`)
-                        .join(" ")}");`
-            )
-            .join("\n")});
-
-        >->.n;
-        <->.r;
-        (._;.n;.r;);
-    out;`;
-
-    let response: string | undefined;
-
-    for (let i = 0; i < (overpassGraph.retries || 3); i++) {
-        if (i > 0) {
-            await new Promise((resolve) => setTimeout(resolve, overpassGraph.retryDelay || 1000));
-        }
-
-        try {
-            response = await fetch(
-                `https://${overpassGraph.server || "overpass.private.coffee"}/api/interpreter`,
-                {
-                    method: "POST",
-                    body: query,
-                }
-            ).then((res) => res.text());
-
-            if (response?.includes("Error")) {
-                const errorMessage = response.match(/<strong[^>]*>Error<\/strong>:([^<]*)/)?.[1]?.trim();
-                throw new Error(decodeURIComponent(errorMessage || "Unknown error"));
-            }
-
-            break;
-        } catch (e) {
-            console.error(`Error fetching OSM data on ${i + 1} attempt:`, e);
-        }
-    }
-
-    if (!response) throw new Error("Failed to fetch OSM data after retries.");
-
-    writeFileSync(filePath, response);
-};
 
 export default Graph;

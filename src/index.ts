@@ -5,5 +5,4 @@ import offsetShape from "./tools/offsetShape";
 import simplifyShape from "./tools/simplifyShape";
 
 export * from "./typings";
-export { Graph, offsetShape, simplifyShape };
-export type { GraphOptions, Profile, ProfileOptions, RouteQueue };
+export { Graph, GraphOptions, Profile, ProfileOptions, RouteQueue, offsetShape, simplifyShape };

@@ -1,8 +1,7 @@
-export type Location = [number, number];
+export type Location = [lon: number, lat: number];
 
 export interface RouteResult {
     nodes: number[];
-    ways: number[];
 }
 
 export interface OsmNode {
@@ -11,14 +10,17 @@ export interface OsmNode {
     tags: Record<string, string>;
 }
 
-export interface OsmWay {
-    id: number;
-    nodes: number[];
-    tags: Record<string, string>;
-}
-
 export interface QueueStatus {
     queuedTasks: number;
     activeTasks: number;
     isEmpty: boolean;
 }
+
+export type RawProfile = {
+    id: string;
+    key: string;
+    penalties: Record<string, number>;
+    access_tags: string[];
+    oneway_tags: string[];
+    except_tags: string[];
+};

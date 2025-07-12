@@ -1,34 +1,103 @@
 mod core;
+mod graph;
 mod parser;
+mod processing;
 mod queue;
 mod routing;
-mod spatial;
 
-use core::types::{Graph, Profile};
+use crate::core::errors::{GraphError, Result};
+use crate::core::types::LoadOptions;
+use crate::graph::GraphContainer;
+use crate::parser::{fetch_from_overpass, parse_osm_xml};
+use crate::processing::GraphBuilder;
+use crate::queue::{RouteQueue, RouteRequest};
 use lazy_static::lazy_static;
 use neon::prelude::*;
-use parser::parse_osm_xml;
-use queue::{RouteQueue, RouteRequest};
-use routing::init_routing_thread_pool;
-use spatial::indexer::index_graph;
+use rayon::prelude::*;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime};
 use tokio::runtime::Runtime;
 
 lazy_static! {
     static ref TOKIO_RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
-    static ref GRAPH_STORAGE: Mutex<HashMap<i32, Arc<RwLock<Graph>>>> = Mutex::new(HashMap::new());
-    static ref PROFILE_STORAGE: Mutex<HashMap<i32, Arc<Profile>>> = Mutex::new(HashMap::new());
+    static ref ROUTING_THREAD_POOL: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get())
+        .build()
+        .expect("Failed to create routing thread pool");
+    static ref GRAPH_STORAGE: Mutex<HashMap<i32, Arc<RwLock<GraphContainer>>>> =
+        Mutex::new(HashMap::new());
     static ref ROUTE_QUEUES: Mutex<HashMap<i32, Arc<RouteQueue>>> = Mutex::new(HashMap::new());
 }
 
 static mut NEXT_GRAPH_ID: i32 = 1;
-static mut NEXT_PROFILE_ID: i32 = 1;
 static mut NEXT_QUEUE_ID: i32 = 1;
 
-fn load_graph_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
-    let file_path_js = cx.argument::<JsString>(0)?;
-    let file_path = file_path_js.value(&mut cx);
+fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
+    let path = Path::new(&options.file_path);
+    let ttl = Duration::from_secs(options.ttl_days * 24 * 60 * 60);
+
+    if path.exists() {
+        if let Ok(metadata) = fs::metadata(path) {
+            if let Ok(modified) = metadata.modified() {
+                if SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or_default()
+                    < ttl
+                {
+                    let reader = BufReader::new(File::open(path)?);
+                    if let Ok(mut container) =
+                        bincode::deserialize_from::<_, GraphContainer>(reader)
+                    {
+                        container.build_all_spatial_indices();
+                        return Ok(container);
+                    }
+                }
+            }
+        }
+    }
+
+    let xml_data = if let Some(overpass_opts) = options.overpass {
+        fetch_from_overpass(
+            &overpass_opts.query,
+            &overpass_opts.server,
+            overpass_opts.retries,
+            overpass_opts.retry_delay,
+        )?
+    } else {
+        fs::read_to_string(path).map_err(GraphError::FileIO)?
+    };
+
+    let (raw_nodes, raw_ways, raw_relations) = parse_osm_xml(&xml_data)?;
+    let processed_profiles: Vec<_> = options
+        .profiles
+        .par_iter()
+        .map(|profile| {
+            let builder = GraphBuilder::new(profile, &raw_nodes, &raw_ways, &raw_relations);
+            builder.build().map(|graph| (profile.id.clone(), graph))
+        })
+        .collect::<Result<_>>()?;
+
+    let mut container = GraphContainer::new();
+    container.profiles = processed_profiles.into_iter().collect();
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let writer = BufWriter::new(File::create(path)?);
+    bincode::serialize_into(writer, &container)?;
+
+    container.build_all_spatial_indices();
+    Ok(container)
+}
+
+fn load_graph(mut cx: FunctionContext) -> JsResult<JsNumber> {
+    let options_json = cx.argument::<JsString>(0)?.value(&mut cx);
+    let options: LoadOptions = serde_json::from_str(&options_json)
+        .or_else(|e| cx.throw_error(format!("Invalid options JSON: {}", e)))?;
 
     let graph_id = unsafe {
         let id = NEXT_GRAPH_ID;
@@ -36,172 +105,116 @@ fn load_graph_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
         id
     };
 
-    let parsed_graph = match parse_osm_xml(&file_path) {
-        Ok(g) => g,
-        Err(parse_err) => {
-            return cx.throw_error(&format!("OSM XML parsing failed: {}", parse_err));
-        }
-    };
-
-    init_routing_thread_pool();
-
-    match index_graph(parsed_graph) {
-        Ok(indexed_graph) => {
-            let graph_arc = Arc::new(RwLock::new(indexed_graph));
-            GRAPH_STORAGE.lock().unwrap().insert(graph_id, graph_arc);
-            Ok(cx.number(graph_id as f64))
-        }
-        Err(index_err) => cx.throw_error(&format!("Graph indexing failed: {}", index_err)),
-    }
-}
-
-fn create_profile_rust(mut cx: FunctionContext) -> JsResult<JsNumber> {
-    let profile_options_json = cx.argument::<JsString>(0)?.value(&mut cx);
-
-    match serde_json::from_str::<Profile>(&profile_options_json) {
-        Ok(profile) => {
-            let profile_id = unsafe {
-                let id = NEXT_PROFILE_ID;
-                NEXT_PROFILE_ID += 1;
-                id
-            };
-            PROFILE_STORAGE
+    match TOKIO_RUNTIME.block_on(async {
+        tokio::task::spawn_blocking(move || load_or_build_graph_sync(options))
+            .await
+            .unwrap()
+    }) {
+        Ok(container) => {
+            GRAPH_STORAGE
                 .lock()
                 .unwrap()
-                .insert(profile_id, Arc::new(profile));
-            Ok(cx.number(profile_id as f64))
+                .insert(graph_id, Arc::new(RwLock::new(container)));
+            Ok(cx.number(graph_id as f64))
         }
-        Err(e) => {
-            return cx.throw_error(&format!("Invalid profile JSON: {}", e));
-        }
+        Err(e) => cx.throw_error(format!("Failed to load/build graph: {}", e)),
     }
 }
-
-fn get_nearest_nodes_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
+fn get_route(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
-    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
-    let limit = cx.argument::<JsNumber>(4)?.value(&mut cx) as usize;
-
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
-    };
-
-    let profile_store = PROFILE_STORAGE.lock().unwrap();
-    let profile = match profile_store.get(&profile_id) {
-        Some(p) => p.clone(),
-        None => return cx.throw_error(&format!("Profile with ID {} does not exist", profile_id)),
-    };
-    drop(profile_store);
-
-    let nearest_result = graph_store
-        .read()
-        .unwrap()
-        .find_nearest_ways_and_nodes(lon, lat, limit, &profile);
-
-    match nearest_result {
-        Ok(node_ids) => {
-            let result = JsArray::new(&mut cx, node_ids.len());
-
-            for (i, node_id) in node_ids.iter().enumerate() {
-                let js_value = cx.number(*node_id as f64);
-                result.set(&mut cx, i as u32, js_value)?;
-            }
-
-            Ok(result)
-        }
-        Err(e) => cx.throw_error(&format!("Error finding nearest ways and nodes: {}", e)),
-    }
-}
-
-fn get_route_rust(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
     let start_node = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
     let end_node = cx.argument::<JsNumber>(3)?.value(&mut cx) as i64;
 
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
     };
 
-    let profile_store = PROFILE_STORAGE.lock().unwrap();
-    let profile = match profile_store.get(&profile_id) {
-        Some(p) => p.clone(),
-        None => return cx.throw_error(&format!("Profile with ID {} does not exist", profile_id)),
-    };
-    drop(profile_store);
-
-    let channel = cx.channel();
     let (deferred, promise) = cx.promise();
+    let channel = cx.channel();
 
-    routing::ROUTING_THREAD_POOL.get().unwrap().spawn(move || {
-        let graph_read_guard = graph_store.read().unwrap();
-        let async_result = TOKIO_RUNTIME
-            .block_on(async { graph_read_guard.route(start_node, end_node, &profile).await });
-
-        deferred.settle_with(&channel, move |mut cx| match async_result {
-            Ok(Some(route_result)) => {
-                let js_result = JsObject::new(&mut cx);
-
-                let nodes = route_result.nodes;
+    ROUTING_THREAD_POOL.spawn(move || {
+        let result = graph
+            .read()
+            .unwrap()
+            .route(&profile_id, start_node, end_node);
+        deferred.settle_with(&channel, move |mut cx| match result {
+            Ok(Some(nodes)) => {
+                let js_result = cx.empty_object();
                 let js_nodes = JsArray::new(&mut cx, nodes.len());
                 for (i, node_id) in nodes.iter().enumerate() {
-                    let js_number = cx.number(*node_id as f64);
-                    js_nodes.set(&mut cx, i as u32, js_number)?;
+                    let js_node_id = cx.number(*node_id as f64);
+                    js_nodes.set(&mut cx, i as u32, js_node_id)?;
                 }
                 js_result.set(&mut cx, "nodes", js_nodes)?;
-
-                let ways = route_result.ways;
-                let js_ways = JsArray::new(&mut cx, ways.len());
-                for (i, way_id) in ways.iter().enumerate() {
-                    let js_number = cx.number(*way_id as f64);
-                    js_ways.set(&mut cx, i as u32, js_number)?;
-                }
-                js_result.set(&mut cx, "ways", js_ways)?;
-
                 Ok(js_result)
             }
+
             Ok(None) => {
-                let js_result = JsObject::new(&mut cx);
+                let js_result = cx.empty_object();
                 let js_nodes = JsArray::new(&mut cx, 0);
-                let js_ways = JsArray::new(&mut cx, 0);
                 js_result.set(&mut cx, "nodes", js_nodes)?;
-                js_result.set(&mut cx, "ways", js_ways)?;
                 Ok(js_result)
             }
-            Err(e) => cx.throw_error(&format!("Error during async routing: {}", e)),
+            Err(e) => cx.throw_error(e.to_string()),
         });
     });
 
     Ok(promise)
 }
 
-fn get_node_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
+fn get_nearest_node(mut cx: FunctionContext) -> JsResult<JsValue> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let node_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i64;
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
+    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
+    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
 
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
     };
 
-    let graph = graph_store.read().unwrap();
+    let graph_guard = graph.read().unwrap();
+    let profile_graph = match graph_guard.profiles.get(&profile_id) {
+        Some(pg) => pg,
+        None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
+    };
 
-    if let Some(node) = graph.nodes.get(&node_id) {
+    match profile_graph.find_nearest_node(lon, lat) {
+        Ok(node_id) => Ok(cx.number(node_id as f64).upcast()),
+        Err(_) => Ok(cx.null().upcast()),
+    }
+}
+
+fn get_node(mut cx: FunctionContext) -> JsResult<JsValue> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
+    let node_id = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
+
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
+    };
+
+    let graph_guard = graph.read().unwrap();
+    let profile_graph = match graph_guard.profiles.get(&profile_id) {
+        Some(pg) => pg,
+        None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
+    };
+
+    if let Some(node) = profile_graph.nodes.get(&node_id) {
         let js_object = cx.empty_object();
 
-        let id_js = cx.number(node.id as f64);
-        js_object.set(&mut cx, "id", id_js)?;
+        let id_val = cx.number(node.id as f64);
+        js_object.set(&mut cx, "id", id_val)?;
 
-        let lat_js = cx.number(node.lat);
-        let lon_js = cx.number(node.lon);
-        let location_js_array = JsArray::new(&mut cx, 2);
-        location_js_array.set(&mut cx, 0, lon_js)?;
-        location_js_array.set(&mut cx, 1, lat_js)?;
-        js_object.set(&mut cx, "location", location_js_array)?;
+        let location_array = JsArray::new(&mut cx, 2);
+        let lon = cx.number(node.lon);
+        let lat = cx.number(node.lat);
+        location_array.set(&mut cx, 0, lon)?;
+        location_array.set(&mut cx, 1, lat)?;
+        js_object.set(&mut cx, "location", location_array)?;
 
         let tags_obj = cx.empty_object();
         for (key, value) in &node.tags {
@@ -210,129 +223,75 @@ fn get_node_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
         }
         js_object.set(&mut cx, "tags", tags_obj)?;
 
-        return Ok(js_object.upcast());
+        Ok(js_object.upcast())
+    } else {
+        Ok(cx.null().upcast())
     }
-
-    Ok(cx.null().upcast())
 }
 
-fn get_way_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
+fn get_shape(mut cx: FunctionContext) -> JsResult<JsArray> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let way_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i64;
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
+    let nodes_js = cx.argument::<JsArray>(2)?;
 
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
     };
 
-    let graph = graph_store.read().unwrap();
+    let graph_guard = graph.read().unwrap();
+    let profile_graph = match graph_guard.profiles.get(&profile_id) {
+        Some(pg) => pg,
+        None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
+    };
 
-    if let Some(way) = graph.ways.get(&way_id) {
-        let js_object = cx.empty_object();
-
-        let id_js = cx.number(way.id as f64);
-        js_object.set(&mut cx, "id", id_js)?;
-
-        let node_refs = &way.node_refs;
-        let node_refs_js = JsArray::new(&mut cx, node_refs.len());
-        for (i, node_id) in node_refs.iter().enumerate() {
-            let node_id_js = cx.number(*node_id as f64);
-            node_refs_js.set(&mut cx, i as u32, node_id_js)?;
+    let len = nodes_js.len(&mut cx);
+    let result = JsArray::new(&mut cx, len as usize);
+    for i in 0..len {
+        let node_id = nodes_js.get::<JsNumber, _, _>(&mut cx, i)?.value(&mut cx) as i64;
+        if let Some(node) = profile_graph.nodes.get(&node_id) {
+            let point_array = JsArray::new(&mut cx, 2);
+            let lon = cx.number(node.lon);
+            let lat = cx.number(node.lat);
+            point_array.set(&mut cx, 0, lon)?;
+            point_array.set(&mut cx, 1, lat)?;
+            result.set(&mut cx, i, point_array)?;
         }
-        js_object.set(&mut cx, "nodes", node_refs_js)?;
-
-        let tags_obj = cx.empty_object();
-        for (key, value) in &way.tags {
-            let value_js = cx.string(value);
-            tags_obj.set(&mut cx, key.as_str(), value_js)?;
-        }
-        js_object.set(&mut cx, "tags", tags_obj)?;
-
-        return Ok(js_object.upcast());
     }
-
-    Ok(cx.null().upcast())
+    Ok(result)
 }
 
 fn unload_graph(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-
-    let mut graph_storage = GRAPH_STORAGE.lock().unwrap();
-    let removed = graph_storage.remove(&graph_id).is_some();
-
+    let removed = GRAPH_STORAGE.lock().unwrap().remove(&graph_id).is_some();
     Ok(cx.boolean(removed))
-}
-
-fn get_shape_rust(mut cx: FunctionContext) -> JsResult<JsArray> {
-    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let nodes = cx.argument::<JsArray>(1)?;
-
-    let graph_store = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
-    };
-
-    let mut nodes_vec = Vec::with_capacity(nodes.len(&mut cx) as usize);
-    for i in 0..nodes.len(&mut cx) {
-        let node_id = nodes.get::<JsNumber, _, u32>(&mut cx, i)?.value(&mut cx) as i64;
-        nodes_vec.push(node_id);
-    }
-
-    let graph = graph_store.read().unwrap();
-    let node_data: Vec<_> = nodes_vec
-        .iter()
-        .filter_map(|&id| graph.nodes.get(&id))
-        .collect();
-
-    let result = JsArray::new(&mut cx, node_data.len());
-    for (i, node) in node_data.iter().enumerate() {
-        let point_array = JsArray::new(&mut cx, 2);
-        let lon = cx.number(node.lon);
-        let lat = cx.number(node.lat);
-        point_array.set(&mut cx, 0, lon)?;
-        point_array.set(&mut cx, 1, lat)?;
-        result.set(&mut cx, i as u32, point_array)?;
-    }
-
-    Ok(result)
 }
 
 fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
     let max_concurrency = if cx.len() > 2 {
         Some(cx.argument::<JsNumber>(2)?.value(&mut cx) as usize)
     } else {
         None
     };
 
-    let graph_store_lock = GRAPH_STORAGE.lock().unwrap();
-    let graph_arc = match graph_store_lock.get(&graph_id) {
-        Some(graph) => graph.clone(),
-        None => return cx.throw_error(&format!("Graph with ID {} does not exist", graph_id)),
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
     };
-    drop(graph_store_lock);
 
-    let profile_store_lock = PROFILE_STORAGE.lock().unwrap();
-    let profile_arc = match profile_store_lock.get(&profile_id) {
-        Some(profile) => profile.clone(),
-        None => return cx.throw_error(&format!("Profile with ID {} does not exist", profile_id)),
-    };
-    drop(profile_store_lock);
-
-    let route_queue = RouteQueue::new(graph_arc, profile_arc, max_concurrency);
     let queue_id = unsafe {
         let id = NEXT_QUEUE_ID;
         NEXT_QUEUE_ID += 1;
         id
     };
 
+    let route_queue = RouteQueue::new(graph, profile_id, max_concurrency);
     ROUTE_QUEUES
         .lock()
         .unwrap()
         .insert(queue_id, Arc::new(route_queue));
-
     Ok(cx.number(queue_id as f64))
 }
 
@@ -342,20 +301,16 @@ fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
     let start_node = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
     let end_node = cx.argument::<JsNumber>(3)?.value(&mut cx) as i64;
 
-    let queues = ROUTE_QUEUES.lock().unwrap();
-    let queue = match queues.get(&queue_id) {
-        Some(queue) => queue.clone(),
-        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+    let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
+        Some(q) => q.clone(),
+        None => return cx.throw_error(format!("RouteQueue with ID {} not found", queue_id)),
     };
 
-    let request = RouteRequest {
-        id: route_id.clone(),
+    let request_id = queue.enqueue(RouteRequest {
+        id: route_id,
         start_node,
         end_node,
-    };
-
-    let request_id = queue.enqueue(request);
-
+    });
     Ok(cx.string(request_id))
 }
 
@@ -364,271 +319,57 @@ fn start_queue_processing(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
 
     let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
-        Some(queue) => queue.clone(),
-        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+        Some(q) => q.clone(),
+        None => return cx.throw_error(format!("RouteQueue with ID {} not found", queue_id)),
     };
 
     let channel = cx.channel();
-
-    if queue.is_empty() {
-        return Ok(cx.undefined());
+    let tasks_to_start = queue.max_concurrency.min(queue.queue_size());
+    for _ in 0..tasks_to_start {
+        queue.process_next(channel.clone(), callback.clone(&mut cx));
     }
-
-    let callback_clone = callback.clone(&mut cx);
-    let max_concurrency = queue.max_concurrency;
-    queue.start_processing(&mut cx, channel.clone(), callback_clone, max_concurrency);
-
-    let process_checker = JsFunction::new(&mut cx, move |mut cx| {
-        let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-        let route_callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
-
-        let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
-            Some(q) => q.clone(),
-            None => return Ok(cx.undefined()),
-        };
-
-        if queue.is_empty() {
-            return Ok(cx.undefined());
-        }
-
-        let channel = cx.channel();
-        queue.start_processing(&mut cx, channel, route_callback, queue.max_concurrency);
-
-        Ok(cx.undefined())
-    })?;
-
-    let setup_interval = JsFunction::new(&mut cx, move |mut cx| {
-        let global = cx.global::<JsObject>("global").unwrap_or_else(|_| {
-            cx.global::<JsObject>("window").unwrap_or_else(|_| {
-                cx.global::<JsObject>("self")
-                    .unwrap_or_else(|_| cx.global::<JsObject>("globalThis").unwrap())
-            })
-        });
-
-        let set_interval = global
-            .get::<JsFunction, _, _>(&mut cx, "setInterval")
-            .unwrap();
-
-        let _clear_interval = global
-            .get::<JsFunction, _, _>(&mut cx, "clearInterval")
-            .unwrap();
-
-        let check_fn = cx.argument::<JsFunction>(0)?;
-        let queue_id = cx.argument::<JsNumber>(1)?.value(&mut cx);
-        let route_callback = cx.argument::<JsFunction>(2)?;
-        let interval = cx.number(100);
-
-        let args: Vec<Handle<JsValue>> = vec![
-            check_fn.upcast(),
-            interval.upcast(),
-            cx.number(queue_id).upcast(),
-            route_callback.upcast(),
-        ];
-
-        let interval_id = set_interval.call(&mut cx, global, args)?;
-
-        let check_queue = JsFunction::new(&mut cx, move |mut cx| {
-            let interval_id = cx.argument::<JsValue>(0)?;
-            let queue_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-
-            let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
-                Some(q) => q.clone(),
-                None => {
-                    let global = cx.global::<JsObject>("globalThis").unwrap();
-                    let clear_interval = global
-                        .get::<JsFunction, _, _>(&mut cx, "clearInterval")
-                        .unwrap();
-                    let _ = clear_interval.call(&mut cx, global, [interval_id]);
-                    return Ok(cx.undefined());
-                }
-            };
-
-            if queue.is_empty() {
-                let global = cx.global::<JsObject>("globalThis").unwrap();
-                let clear_interval = global
-                    .get::<JsFunction, _, _>(&mut cx, "clearInterval")
-                    .unwrap();
-                let _ = clear_interval.call(&mut cx, global, [interval_id]);
-            }
-
-            Ok(cx.undefined())
-        })?;
-
-        let check_args: Vec<Handle<JsValue>> = vec![
-            check_queue.upcast(),
-            cx.number(500).upcast(),
-            interval_id,
-            cx.number(queue_id).upcast(),
-        ];
-
-        let _ = set_interval.call(&mut cx, global, check_args)?;
-
-        Ok(cx.undefined())
-    })?;
-
-    let undefined = cx.undefined();
-    let queue_id_arg = cx.number(queue_id);
-    let input_callback_arg = cx.argument::<JsFunction>(1)?;
-
-    let mut call_args: Vec<Handle<JsValue>> = Vec::new();
-    call_args.push(process_checker.upcast());
-    call_args.push(queue_id_arg.upcast());
-    call_args.push(input_callback_arg.upcast());
-
-    setup_interval.call(&mut cx, undefined, call_args)?;
-
     Ok(cx.undefined())
 }
 
 fn get_queue_status(mut cx: FunctionContext) -> JsResult<JsObject> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-
     let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
-        Some(queue) => queue.clone(),
-        None => return cx.throw_error(&format!("RouteQueue with ID {} does not exist", queue_id)),
+        Some(q) => q.clone(),
+        None => return cx.throw_error(format!("RouteQueue with ID {} not found", queue_id)),
     };
 
     let obj = cx.empty_object();
-    let queue_size = cx.number(queue.queue_size() as f64);
-    let active_count = cx.number(queue.active_count() as f64);
+
+    let queued_tasks = cx.number(queue.queue_size() as f64);
+    let active_tasks = cx.number(queue.active_count() as f64);
     let is_empty = cx.boolean(queue.is_empty());
 
-    obj.set(&mut cx, "queuedTasks", queue_size)?;
-    obj.set(&mut cx, "activeTasks", active_count)?;
+    obj.set(&mut cx, "queuedTasks", queued_tasks)?;
+    obj.set(&mut cx, "activeTasks", active_tasks)?;
     obj.set(&mut cx, "isEmpty", is_empty)?;
-
     Ok(obj)
 }
 
 fn clear_route_queue(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-
-    let mut queues = ROUTE_QUEUES.lock().unwrap();
-    let removed = queues.remove(&queue_id).is_some();
-
+    let removed = ROUTE_QUEUES.lock().unwrap().remove(&queue_id).is_some();
     Ok(cx.boolean(removed))
-}
-
-fn search_nodes_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
-    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
-    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
-    let radius = cx.argument::<JsNumber>(4)?.value(&mut cx);
-
-    let graph_store_lock = GRAPH_STORAGE.lock().unwrap();
-    let graph_arc = match graph_store_lock.get(&graph_id) {
-        Some(g) => g.clone(),
-        None => return cx.throw_error("Graph not found"),
-    };
-    drop(graph_store_lock);
-
-    let profile_store_lock = PROFILE_STORAGE.lock().unwrap();
-    let profile_arc = match profile_store_lock.get(&profile_id) {
-        Some(p) => p.clone(),
-        None => return cx.throw_error("Profile not found"),
-    };
-    drop(profile_store_lock);
-
-    let graph = graph_arc.read().unwrap();
-    let profile = profile_arc.as_ref();
-
-    match graph.search_nodes_in_radius(lon, lat, radius, profile) {
-        Ok(nodes) => {
-            let js_array = JsArray::new(&mut cx, nodes.len() as usize);
-            for (i, node) in nodes.iter().enumerate() {
-                let js_node = cx.empty_object();
-                let id = cx.number(node.id as f64);
-                let js_lat = cx.number(node.lat);
-                let js_lon = cx.number(node.lon);
-                let js_tags = cx.empty_object();
-                for (key, value) in &node.tags {
-                    let value_js = cx.string(value);
-                    js_tags.set(&mut cx, key.as_str(), value_js)?;
-                }
-                js_node.set(&mut cx, "id", id)?;
-                let js_location = JsArray::new(&mut cx, 2);
-                js_location.set(&mut cx, 0, js_lon)?;
-                js_location.set(&mut cx, 1, js_lat)?;
-                js_node.set(&mut cx, "location", js_location)?;
-                js_node.set(&mut cx, "tags", js_tags)?;
-                js_array.set(&mut cx, i as u32, js_node)?;
-            }
-            Ok(js_array.upcast())
-        }
-        Err(e) => cx.throw_error(format!("Error searching nodes: {}", e)),
-    }
-}
-
-fn search_ways_rust(mut cx: FunctionContext) -> JsResult<JsValue> {
-    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let profile_id = cx.argument::<JsNumber>(1)?.value(&mut cx) as i32;
-    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
-    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
-    let radius = cx.argument::<JsNumber>(4)?.value(&mut cx);
-
-    let graph_store_lock = GRAPH_STORAGE.lock().unwrap();
-    let graph_arc = match graph_store_lock.get(&graph_id) {
-        Some(g) => g.clone(),
-        None => return cx.throw_error("Graph not found"),
-    };
-    drop(graph_store_lock);
-
-    let profile_store_lock = PROFILE_STORAGE.lock().unwrap();
-    let profile_arc = match profile_store_lock.get(&profile_id) {
-        Some(p) => p.clone(),
-        None => return cx.throw_error("Profile not found"),
-    };
-    drop(profile_store_lock);
-
-    let graph = graph_arc.read().unwrap();
-    let profile = profile_arc.as_ref();
-
-    match graph.search_ways_in_radius(lon, lat, radius, profile) {
-        Ok(ways) => {
-            let js_array = JsArray::new(&mut cx, ways.len() as usize);
-            for (i, way) in ways.iter().enumerate() {
-                let js_way = cx.empty_object();
-                let id = cx.number(way.id as f64);
-                let js_node_refs = JsArray::new(&mut cx, way.node_refs.len() as usize);
-                for (j, node_ref) in way.node_refs.iter().enumerate() {
-                    let js_node_ref = cx.number(*node_ref as f64);
-                    js_node_refs.set(&mut cx, j as u32, js_node_ref)?;
-                }
-                let js_tags = cx.empty_object();
-                for (key, value) in &way.tags {
-                    let value_js = cx.string(value);
-                    js_tags.set(&mut cx, key.as_str(), value_js)?;
-                }
-                js_way.set(&mut cx, "id", id)?;
-                js_way.set(&mut cx, "nodes", js_node_refs)?;
-                js_way.set(&mut cx, "tags", js_tags)?;
-                js_array.set(&mut cx, i as u32, js_way)?;
-            }
-            Ok(js_array.upcast())
-        }
-        Err(e) => cx.throw_error(format!("Error searching ways: {}", e)),
-    }
 }
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
-    cx.export_function("loadGraph", load_graph_rust)?;
-    cx.export_function("createProfile", create_profile_rust)?;
-    cx.export_function("getNearestNodes", get_nearest_nodes_rust)?;
-    cx.export_function("getRoute", get_route_rust)?;
-    cx.export_function("getNode", get_node_rust)?;
-    cx.export_function("getWay", get_way_rust)?;
-    cx.export_function("getShape", get_shape_rust)?;
+    cx.export_function("loadGraph", load_graph)?;
     cx.export_function("unloadGraph", unload_graph)?;
+    cx.export_function("getRoute", get_route)?;
+    cx.export_function("getNearestNode", get_nearest_node)?;
+    cx.export_function("getNode", get_node)?;
+    cx.export_function("getShape", get_shape)?;
 
     cx.export_function("createRouteQueue", create_route_queue)?;
     cx.export_function("enqueueRoute", enqueue_route)?;
     cx.export_function("startQueueProcessing", start_queue_processing)?;
     cx.export_function("getQueueStatus", get_queue_status)?;
     cx.export_function("clearRouteQueue", clear_route_queue)?;
-    cx.export_function("searchNodes", search_nodes_rust)?;
-    cx.export_function("searchWays", search_ways_rust)?;
 
     Ok(())
 }

@@ -8,10 +8,20 @@ pub enum GraphError {
     FileIO(#[from] IoError),
     #[error("XML Parsing Error: {0}")]
     XmlParsing(#[from] XmlError),
+    #[error("JSON Deserialization Error: {0}")]
+    JsonError(#[from] serde_json::Error),
+    #[error("Overpass API Error: {0}")]
+    OverpassError(String),
     #[error("Invalid OSM Data: {0}")]
     InvalidOsmData(String),
-    #[error("Graph Not Indexed: {0}")]
-    GraphNotIndexed(String),
+    #[error("Graph with ID {0} not found")]
+    GraphNotFound(i32),
+    #[error("Profile with ID '{0}' not found in graph container")]
+    ProfileNotFound(String),
+    #[error("Routing Error: {0}")]
+    RoutingError(String),
+    #[error("Bincode Error: {0}")]
+    Bincode(#[from] Box<bincode::ErrorKind>),
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;

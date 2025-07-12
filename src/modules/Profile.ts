@@ -1,5 +1,5 @@
-import { createProfile, getNearestNodes, getRoute, searchNodes, searchWays } from "../RustModules";
-import { Location } from "../typings";
+import { getNearestNode, getNode, getRoute, getShape } from "../RustModules";
+import { Location, OsmNode, RawProfile } from "../typings";
 import Graph from "./Graph";
 import RouteQueue from "./RouteQueue";
 
@@ -51,13 +51,15 @@ export type ProfileOptions = (
           penalties: [RailwayValue | RailwayValue[], number][];
       }
 ) & {
+    id: string;
     accessTags?: string[];
     onewayTags?: string[];
     exceptTags?: string[];
 };
 
 class Profile {
-    profileId: number;
+    public rawProfile: RawProfile;
+    public graph: Graph;
 
     constructor(profile: ProfileOptions) {
         const convertedPenalties: Record<string, number> = {};
@@ -72,49 +74,44 @@ class Profile {
             }
         }
 
-        this.profileId = createProfile(
-            JSON.stringify({
-                key: profile.key,
-                penalties: convertedPenalties,
-                access_tags: Array.from(new Set([...(profile.accessTags ?? []), "access"])),
-                oneway_tags: Array.from(new Set([...(profile.onewayTags ?? []), "oneway"])),
-                except_tags: profile.exceptTags ?? [],
-            })
-        );
+        this.rawProfile = {
+            id: profile.id,
+            key: profile.key,
+            penalties: convertedPenalties,
+            access_tags: Array.from(new Set([...(profile.accessTags ?? []), "access"])),
+            oneway_tags: Array.from(new Set([...(profile.onewayTags ?? []), "oneway"])),
+            except_tags: profile.exceptTags ?? [],
+        };
     }
 
-    get graph(): Graph {
-        return undefined as any; // This will be set by the Graph class when creating a Profile instance.
-    }
-
-    getNearestNodes = ([lon, lat]: Location, limit: number) => {
+    getNearestNode = ([lon, lat]: Location): number | null => {
         if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getNearestNodes(this.graph.graphId, this.profileId, lon, lat, limit);
-    };
-
-    searchNodes = ([lon, lat]: Location, radius: number) => {
-        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
-
-        return searchNodes(this.graph.graphId, this.profileId, lon, lat, radius);
-    };
-
-    searchWays = ([lon, lat]: Location, radius: number) => {
-        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
-
-        return searchWays(this.graph.graphId, this.profileId, lon, lat, radius);
+        return getNearestNode(this.graph.graphId, this.rawProfile.id, lon, lat);
     };
 
     getRoute = async (startNode: number, endNode: number) => {
         if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getRoute(this.graph.graphId, this.profileId, startNode, endNode);
+        return getRoute(this.graph.graphId, this.rawProfile.id, startNode, endNode);
+    };
+
+    getNode = (nodeId: number): OsmNode | null => {
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
+
+        return getNode(this.graph.graphId, this.rawProfile.id, nodeId);
+    };
+
+    getShape = (nodes: number[]): Location[] => {
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
+
+        return getShape(this.graph.graphId, this.rawProfile.id, nodes);
     };
 
     createRouteQueue = (enableProgressBar?: boolean, maxConcurrency?: number) => {
         if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return new RouteQueue(this.graph.graphId, this.profileId, enableProgressBar, maxConcurrency);
+        return new RouteQueue(this.graph.graphId, this.rawProfile.id, enableProgressBar, maxConcurrency);
     };
 }
 
