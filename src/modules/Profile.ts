@@ -1,4 +1,4 @@
-import { getNearestNode, getNode, getRoute, getShape } from "../RustModules";
+import { getNearestNode, getNode, getNodesInRadius, getRoute, getShape } from "../RustModules";
 import { Location, OsmNode, RawProfile } from "../typings";
 import Graph from "./Graph";
 import RouteQueue from "./RouteQueue";
@@ -88,6 +88,12 @@ class Profile {
         if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
         return getNearestNode(this.graph.graphId, this.rawProfile.id, lon, lat);
+    };
+
+    getNodesInRadius = ([lon, lat]: Location, radiusMeters: number): OsmNode[] => {
+        if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
+
+        return getNodesInRadius(this.graph.graphId, this.rawProfile.id, lon, lat, radiusMeters);
     };
 
     getRoute = async (startNode: number, endNode: number) => {

@@ -13,6 +13,14 @@ export const getShape: (graphId: number, profileId: string, nodes: number[]) => 
 export const getNearestNode: (graphId: number, profileId: string, lon: number, lat: number) => number | null =
     binding.getNearestNode;
 
+export const getNodesInRadius: (
+    graphId: number,
+    profileId: string,
+    lon: number,
+    lat: number,
+    radiusMeters: number
+) => OsmNode[] = binding.getNodesInRadius;
+
 export const getRoute: (
     graphId: number,
     profileId: string,

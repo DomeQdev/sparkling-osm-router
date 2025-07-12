@@ -1,6 +1,6 @@
 use crate::core::errors::{GraphError, Result};
 use crate::graph::{ProcessedGraph, RouteNode};
-use crate::routing::haversine_distance;
+use crate::routing::distance;
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -9,7 +9,7 @@ use std::collections::BinaryHeap;
 struct State {
     cost: u32,
     estimated_total_cost: u32,
-    node_id: u32, // ZMIANA: Praca na wewnętrznych ID
+    node_id: u32,
     prev_external_id: Option<i64>,
 }
 
@@ -30,7 +30,7 @@ impl PartialOrd for State {
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct VisitedKey {
-    node_id: u32, // ZMIANA: Praca na wewnętrznych ID
+    node_id: u32,
     prev_external_id: Option<i64>,
 }
 
@@ -39,11 +39,9 @@ pub fn find_route_astar(
     start_osm_id: i64,
     end_osm_id: i64,
 ) -> Result<Option<Vec<i64>>> {
-    // ZMIANA: Konwersja z zewnętrznych OSM ID na wewnętrzne ID
-    let start_node_id = *graph
-        .node_id_map
-        .get(&start_osm_id)
-        .ok_or_else(|| GraphError::RoutingError(format!("Start node {} not in graph", start_osm_id)))?;
+    let start_node_id = *graph.node_id_map.get(&start_osm_id).ok_or_else(|| {
+        GraphError::RoutingError(format!("Start node {} not in graph", start_osm_id))
+    })?;
     let end_node_id = *graph
         .node_id_map
         .get(&end_osm_id)
@@ -78,7 +76,7 @@ pub fn find_route_astar(
                 },
                 &came_from,
             );
-            // ZMIANA: Konwersja ścieżki z wewnętrznych ID na zewnętrzne OSM ID
+
             let path_external = path_internal
                 .iter()
                 .map(|&id| graph.nodes[id as usize].external_id)
@@ -96,7 +94,6 @@ pub fn find_route_astar(
 
         let current_node_external_id = graph.nodes[current.node_id as usize].external_id;
 
-        // ZMIANA: Użycie nowej, szybkiej metody `neighbors`
         for &(neighbor_id, cost) in graph.neighbors(current.node_id) {
             let neighbor_node = &graph.nodes[neighbor_id as usize];
             if Some(neighbor_node.external_id) == current.prev_external_id {
@@ -128,7 +125,7 @@ pub fn find_route_astar(
 fn reconstruct_path(
     mut current_key: VisitedKey,
     came_from: &FxHashMap<VisitedKey, VisitedKey>,
-) -> Vec<u32> { // ZMIANA: Zwraca Vec<u32>
+) -> Vec<u32> {
     let mut path = vec![current_key.node_id];
     while let Some(&prev_key) = came_from.get(&current_key) {
         path.push(prev_key.node_id);
@@ -139,5 +136,5 @@ fn reconstruct_path(
 }
 
 fn heuristic_cost(a: &RouteNode, b: &RouteNode) -> u32 {
-    (haversine_distance(a.lat, a.lon, b.lat, b.lon) / 13.8 * 1000.0) as u32
+    (distance(a.lat, a.lon, b.lat, b.lon) / 13.8 * 1000.0) as u32
 }

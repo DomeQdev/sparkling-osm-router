@@ -1,7 +1,7 @@
 use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Node, Profile, Relation, RelationMember, Way};
 use crate::graph::{ProcessedGraph, RouteNode, MAX_NODE_ID};
-use crate::routing::haversine_distance;
+use crate::routing::distance;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 
@@ -18,7 +18,6 @@ pub struct GraphBuilder<'a> {
     raw_ways: &'a HashMap<i64, Way>,
     raw_relations: &'a HashMap<i64, Relation>,
 
-    // ZMIANA: Nowe pola do budowy grafu w formacie CSR
     node_map: FxHashMap<i64, u32>,
     next_internal_id: u32,
     nodes: Vec<RouteNode>,
@@ -50,7 +49,6 @@ impl<'a> GraphBuilder<'a> {
     }
 
     pub fn build(mut self) -> Result<ProcessedGraph> {
-        // Krok 1: Przejdź przez wszystkie użyteczne drogi i utwórz dla ich węzłów wewnętrzne ID
         for way in self.raw_ways.values() {
             if self.is_way_usable(way) {
                 let valid_nodes: Vec<i64> = way
@@ -69,12 +67,10 @@ impl<'a> GraphBuilder<'a> {
             }
         }
 
-        // Krok 2: Przetwórz drogi, dodając krawędzie do tymczasowej struktury
         for way in self.raw_ways.values() {
             self.add_way(way);
         }
 
-        // Krok 3: Przetwórz relacje, modyfikując graf
         for relation in self.raw_relations.values() {
             if let Err(e) = self.add_relation(relation) {
                 log::warn!(
@@ -85,7 +81,6 @@ impl<'a> GraphBuilder<'a> {
             }
         }
 
-        // Krok 4: Skonwertuj tymczasową strukturę do finalnego formatu CSR
         self.finalize_graph()
     }
 
@@ -157,8 +152,7 @@ impl<'a> GraphBuilder<'a> {
                 let (from_osm, to_osm) = (window[0], window[1]);
                 let from_node = self.raw_nodes.get(&from_osm).unwrap();
                 let to_node = self.raw_nodes.get(&to_osm).unwrap();
-                let distance =
-                    haversine_distance(from_node.lat, from_node.lon, to_node.lat, to_node.lon);
+                let distance = distance(from_node.lat, from_node.lon, to_node.lat, to_node.lon);
                 let cost = (distance * penalty * 1000.0) as u32;
 
                 let from_id = *self.node_map.get(&from_osm).unwrap();
@@ -215,8 +209,13 @@ impl<'a> GraphBuilder<'a> {
             let (edge_to_clone, cost) = self.find_edge_to_clone(prev_node_id, current_osm_id)?;
 
             let is_last_segment = current_osm_id == *osm_nodes.last().unwrap();
-            let is_phantom = self.nodes[edge_to_clone as usize].external_id != self.node_map.iter().find(|(_, &v)| v == edge_to_clone).map(|(k, _)| *k).unwrap_or(0);
-
+            let is_phantom = self.nodes[edge_to_clone as usize].external_id
+                != self
+                    .node_map
+                    .iter()
+                    .find(|(_, &v)| v == edge_to_clone)
+                    .map(|(k, _)| *k)
+                    .unwrap_or(0);
 
             if !is_phantom && !is_last_segment {
                 let new_phantom_id = self.create_phantom_node(current_osm_id)?;
@@ -292,8 +291,6 @@ impl<'a> GraphBuilder<'a> {
         }
         Ok(phantom_internal_id)
     }
-
-    // --- Pozostałe funkcje pomocnicze (bez zmian w logice, ale skopiowane dla kompletności) ---
 
     fn get_way_penalty(&self, tags: &HashMap<String, String>) -> Option<f64> {
         if !self.is_way_accessible(tags) {
@@ -382,7 +379,8 @@ impl<'a> GraphBuilder<'a> {
             }
         }
 
-        let from = from.ok_or_else(|| GraphError::InvalidOsmData("Missing 'from' member".into()))?;
+        let from =
+            from.ok_or_else(|| GraphError::InvalidOsmData("Missing 'from' member".into()))?;
         let to = to.ok_or_else(|| GraphError::InvalidOsmData("Missing 'to' member".into()))?;
         if via.is_empty() {
             return Err(GraphError::InvalidOsmData("Missing 'via' member".into()));

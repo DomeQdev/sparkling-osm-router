@@ -76,6 +76,20 @@ impl ProcessedGraph {
             .map(|node| node.external_id)
             .ok_or_else(|| GraphError::RoutingError("No nodes found in spatial index.".to_string()))
     }
+
+    pub fn find_nodes_within_radius(
+        &self,
+        lon: f64,
+        lat: f64,
+        radius_meters: f64,
+    ) -> Vec<&RouteNode> {
+        let radius_degrees = radius_meters / 111_100.0;
+        let radius_degrees_sq = radius_degrees * radius_degrees;
+
+        self.spatial_index
+            .locate_within_distance([lon, lat], radius_degrees_sq)
+            .collect()
+    }
 }
 
 pub const MAX_NODE_ID: i64 = 0x0008_0000_0000_0000;
