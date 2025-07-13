@@ -6,7 +6,7 @@ import {
     createRouteQueue,
     enqueueRoute,
     getQueueStatus,
-    startQueueProcessing,
+    processQueue,
 } from "../RustModules";
 
 class RouteQueue {
@@ -26,7 +26,6 @@ class RouteQueue {
 
     enqueueRoute = (routeId: string, startNode: number, endNode: number) => {
         if (this.processing) throw new Error("Queue is already processing. Cannot enqueue new routes.");
-
         return enqueueRoute(this.queueId, routeId, startNode, endNode);
     };
 
@@ -36,7 +35,6 @@ class RouteQueue {
 
     clear = () => {
         if (this.processing) throw new Error("Cannot clear queue while processing.");
-
         return clearRouteQueue(this.queueId);
     };
 
@@ -62,31 +60,27 @@ class RouteQueue {
                     {
                         format: "Processing |{bar}| {percentage}% | {value}/{total} | ETA: {eta_formatted} | Speed: {speed} routes/s | Empty: {emptyCount}",
                         stopOnComplete: true,
-                        hideCursor: true,
                     },
                     cliProgress.Presets.shades_classic
                 );
-
                 bar.start(totalTasks, 0, { speed: "N/A", emptyCount: 0 });
             }
 
-            startQueueProcessing(this.queueId, (id, result) => {
-                completedTasks++;
-
+            processQueue(this.queueId, (id, result) => {
                 if (result instanceof Error) {
                     callback(id, null, result);
                 } else {
-                    if (!result || !result.nodes.length) emptyCount++;
+                    if (!result || !result.nodes || !result.nodes.length) emptyCount++;
                     callback(id, result);
                 }
 
+                completedTasks++;
                 if (bar) {
                     bar.increment(1, { emptyCount });
                 }
 
                 if (completedTasks >= totalTasks) {
                     if (bar) bar.stop();
-
                     this.processing = false;
                     resolve();
                 }

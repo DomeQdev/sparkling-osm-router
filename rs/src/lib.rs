@@ -374,7 +374,7 @@ fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
     Ok(cx.string(request_id))
 }
 
-fn start_queue_processing(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+fn process_queue(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
 
@@ -384,10 +384,8 @@ fn start_queue_processing(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     };
 
     let channel = cx.channel();
-    let tasks_to_start = queue.max_concurrency.min(queue.queue_size());
-    for _ in 0..tasks_to_start {
-        queue.process_next(channel.clone(), callback.clone(&mut cx));
-    }
+    queue.start_processing(channel, callback);
+    
     Ok(cx.undefined())
 }
 
@@ -428,7 +426,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 
     cx.export_function("createRouteQueue", create_route_queue)?;
     cx.export_function("enqueueRoute", enqueue_route)?;
-    cx.export_function("startQueueProcessing", start_queue_processing)?;
+    cx.export_function("processQueue", process_queue)?;
     cx.export_function("getQueueStatus", get_queue_status)?;
     cx.export_function("clearRouteQueue", clear_route_queue)?;
 

@@ -17,6 +17,7 @@ pub struct RouteQueue {
     pub max_concurrency: usize,
     graph_container: Arc<std::sync::RwLock<GraphContainer>>,
     profile_id: String,
+    callback: Arc<Mutex<Option<Root<JsFunction>>>>,
 }
 
 impl Finalize for RouteQueue {}
@@ -42,6 +43,7 @@ impl RouteQueue {
             max_concurrency: actual_concurrency,
             graph_container,
             profile_id,
+            callback: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -59,10 +61,19 @@ impl RouteQueue {
         id
     }
 
-    pub fn process_next(&self, channel: Channel, callback: Root<JsFunction>) -> bool {
+    pub fn start_processing(&self, channel: Channel, callback: Root<JsFunction>) {
+        *self.callback.lock().unwrap() = Some(callback);
+
+        let tasks_to_start = self.max_concurrency.min(self.queue_size());
+        for _ in 0..tasks_to_start {
+            self.process_next(channel.clone());
+        }
+    }
+
+    fn process_next(&self, channel: Channel) {
         let can_process = *self.active_count.lock().unwrap() < self.max_concurrency;
         if !can_process {
-            return false;
+            return;
         }
 
         let request = { self.queue.lock().unwrap().pop_front() };
@@ -80,44 +91,48 @@ impl RouteQueue {
                 };
 
                 channel.send(move |mut cx| {
-                    let callback = callback.into_inner(&mut cx);
-                    let this = cx.undefined();
-                    let id_js = cx.string(request.id);
-
-                    let result_value: Handle<JsValue> = match result {
-                        Ok(Some(nodes)) => {
-                            let js_result = cx.empty_object();
-                            let js_nodes = JsArray::new(&mut cx, nodes.len());
-                            for (i, node_id) in nodes.iter().enumerate() {
-                                let js_node = cx.number(*node_id as f64);
-                                js_nodes.set(&mut cx, i as u32, js_node).unwrap();
-                            }
-                            js_result.set(&mut cx, "nodes", js_nodes).unwrap();
-                            js_result.upcast()
-                        }
-                        Ok(None) => cx.null().upcast(),
-                        Err(e) => cx.error(e.to_string())?.upcast(),
-                    };
-
-                    let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
-                    let _ = callback.call(&mut cx, this, args);
-
                     *self_clone.active_count.lock().unwrap() -= 1;
+
+                    if let Some(callback) = self_clone.callback.lock().unwrap().as_ref() {
+                        let callback = callback.to_inner(&mut cx);
+                        let this = cx.undefined();
+                        let id_js = cx.string(request.id);
+
+                        let result_value: Handle<JsValue> = match result {
+                            Ok(Some(nodes)) => {
+                                let js_result = cx.empty_object();
+                                let js_nodes = JsArray::new(&mut cx, nodes.len() as usize);
+                                for (i, node_id) in nodes.iter().enumerate() {
+                                    let js_node = cx.number(*node_id as f64);
+                                    js_nodes.set(&mut cx, i as u32, js_node).unwrap();
+                                }
+                                js_result.set(&mut cx, "nodes", js_nodes).unwrap();
+                                js_result.upcast()
+                            }
+                            Ok(None) => cx.null().upcast(),
+                            Err(e) => cx.error(e.to_string())?.upcast(),
+                        };
+
+                        let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
+                        let _ = callback.call(&mut cx, this, args);
+                    }
+
+                    self_clone.process_next(cx.channel());
+
                     Ok(())
                 });
             });
-            true
-        } else {
-            false
         }
     }
 
     pub fn queue_size(&self) -> usize {
         self.queue.lock().unwrap().len()
     }
+
     pub fn active_count(&self) -> usize {
         *self.active_count.lock().unwrap()
     }
+
     pub fn is_empty(&self) -> bool {
         self.queue_size() == 0 && self.active_count() == 0
     }
@@ -131,6 +146,7 @@ impl Clone for RouteQueue {
             max_concurrency: self.max_concurrency,
             graph_container: self.graph_container.clone(),
             profile_id: self.profile_id.clone(),
+            callback: self.callback.clone(),
         }
     }
 }

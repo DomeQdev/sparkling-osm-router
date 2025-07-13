@@ -34,10 +34,10 @@ export const createRouteQueue: (graphId: number, profileId: string, maxConcurren
 export const enqueueRoute: (queueId: number, routeId: string, startNode: number, endNode: number) => string =
     binding.enqueueRoute;
 
-export const startQueueProcessing: (
+export const processQueue: (
     queueId: number,
     callback: (id: string, result: RouteResult | Error | null) => void
-) => void = binding.startQueueProcessing;
+) => void = binding.processQueue;
 
 export const getQueueStatus: (queueId: number) => QueueStatus = binding.getQueueStatus;
 
