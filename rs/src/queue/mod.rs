@@ -18,12 +18,14 @@ pub struct RouteQueue {
     graph_container: Arc<std::sync::RwLock<GraphContainer>>,
     profile_id: String,
     callback: Arc<Mutex<Option<Root<JsFunction>>>>,
+    pub graph_id: i32,
 }
 
 impl Finalize for RouteQueue {}
 
 impl RouteQueue {
     pub fn new(
+        graph_id: i32,
         graph_container: Arc<std::sync::RwLock<GraphContainer>>,
         profile_id: String,
         max_concurrency: Option<usize>,
@@ -44,6 +46,7 @@ impl RouteQueue {
             graph_container,
             profile_id,
             callback: Arc::new(Mutex::new(None)),
+            graph_id,
         }
     }
 
@@ -116,7 +119,6 @@ impl RouteQueue {
                         let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
                         let _ = callback.call(&mut cx, this, args);
                     }
-
                     self_clone.process_next(cx.channel());
 
                     Ok(())
@@ -147,6 +149,7 @@ impl Clone for RouteQueue {
             graph_container: self.graph_container.clone(),
             profile_id: self.profile_id.clone(),
             callback: self.callback.clone(),
+            graph_id: self.graph_id,
         }
     }
 }

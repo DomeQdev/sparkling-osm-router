@@ -52,7 +52,6 @@ fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
                     if let Ok(mut container) =
                         bincode::deserialize_from::<_, GraphContainer>(reader)
                     {
-                        
                         container.build_all_indices();
                         return Ok(container);
                     }
@@ -90,11 +89,6 @@ fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
     }
     let writer = BufWriter::new(File::create(path)?);
     bincode::serialize_into(writer, &container)?;
-
-    
-    
-    
-    
 
     Ok(container)
 }
@@ -255,12 +249,10 @@ fn get_node(mut cx: FunctionContext) -> JsResult<JsValue> {
         None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
     };
 
-    
     if let Some(internal_id) = profile_graph.node_id_map.get(&node_id) {
         if let Some(node) = profile_graph.nodes.get(*internal_id as usize) {
             let js_object = cx.empty_object();
 
-            
             let id_val = cx.number(node.external_id as f64);
             js_object.set(&mut cx, "id", id_val)?;
 
@@ -281,7 +273,7 @@ fn get_node(mut cx: FunctionContext) -> JsResult<JsValue> {
             return Ok(js_object.upcast());
         }
     }
-    
+
     Ok(cx.null().upcast())
 }
 
@@ -305,8 +297,7 @@ fn get_shape(mut cx: FunctionContext) -> JsResult<JsArray> {
     let result = JsArray::new(&mut cx, len as usize);
     for i in 0..len {
         let node_id = nodes_js.get::<JsNumber, _, _>(&mut cx, i)?.value(&mut cx) as i64;
-        
-        
+
         if let Some(internal_id) = profile_graph.node_id_map.get(&node_id) {
             if let Some(node) = profile_graph.nodes.get(*internal_id as usize) {
                 let point_array = JsArray::new(&mut cx, 2);
@@ -322,11 +313,30 @@ fn get_shape(mut cx: FunctionContext) -> JsResult<JsArray> {
 }
 
 fn unload_graph(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
-    let removed = GRAPH_STORAGE.lock().unwrap().remove(&graph_id).is_some();
-    Ok(cx.boolean(removed))
-}
+    let graph_id_to_remove = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let removed_graph = GRAPH_STORAGE
+        .lock()
+        .unwrap()
+        .remove(&graph_id_to_remove)
+        .is_some();
 
+    if !removed_graph {
+        return Ok(cx.boolean(false));
+    }
+
+    let mut queues = ROUTE_QUEUES.lock().unwrap();
+    let queue_ids_to_remove: Vec<i32> = queues
+        .iter()
+        .filter(|(_, queue)| queue.graph_id == graph_id_to_remove)
+        .map(|(id, _)| *id)
+        .collect();
+
+    for queue_id in queue_ids_to_remove {
+        queues.remove(&queue_id);
+    }
+
+    Ok(cx.boolean(true))
+}
 fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -347,7 +357,7 @@ fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
         id
     };
 
-    let route_queue = RouteQueue::new(graph, profile_id, max_concurrency);
+    let route_queue = RouteQueue::new(graph_id, graph, profile_id, max_concurrency);
     ROUTE_QUEUES
         .lock()
         .unwrap()
@@ -385,7 +395,7 @@ fn process_queue(mut cx: FunctionContext) -> JsResult<JsUndefined> {
 
     let channel = cx.channel();
     queue.start_processing(channel, callback);
-    
+
     Ok(cx.undefined())
 }
 
