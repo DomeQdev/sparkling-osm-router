@@ -25,6 +25,8 @@ pub struct GraphBuilder<'a> {
 
     phantom_node_counter: i64,
     way_node_map: FxHashMap<i64, Vec<i64>>,
+
+    phantom_via_map: FxHashMap<(u32, i64), u32>,
 }
 
 impl<'a> GraphBuilder<'a> {
@@ -45,6 +47,7 @@ impl<'a> GraphBuilder<'a> {
             temp_edges: FxHashMap::default(),
             phantom_node_counter: MAX_NODE_ID,
             way_node_map: FxHashMap::default(),
+            phantom_via_map: FxHashMap::default(),
         }
     }
 
@@ -180,99 +183,181 @@ impl<'a> GraphBuilder<'a> {
             return Ok(());
         }
 
-        let members = self.get_ordered_restriction_members(rel)?;
-        let mut member_nodes: Vec<Vec<i64>> = Vec::new();
-        for m in members {
-            member_nodes.push(self.restriction_member_to_nodes(rel, m)?);
-        }
-        let nodes_path = self.flatten_restriction_nodes(rel, member_nodes)?;
+        if restriction_type == TurnRestriction::Mandatory {
+            let from_member = rel
+                .members
+                .iter()
+                .find(|m| m.role == "from")
+                .ok_or_else(|| {
+                    GraphError::InvalidOsmData("Mandatory restriction has no 'from' member".into())
+                })?;
+            let via_member_node_id = rel
+                .members
+                .iter()
+                .find(|m| m.role == "via" && m.member_type == "node")
+                .map(|m| m.ref_id)
+                .ok_or_else(|| {
+                    GraphError::InvalidOsmData(
+                        "Mandatory restriction needs a single 'via' node".into(),
+                    )
+                })?;
+            let to_member = rel.members.iter().find(|m| m.role == "to").ok_or_else(|| {
+                GraphError::InvalidOsmData("Mandatory restriction has no 'to' member".into())
+            })?;
 
-        if nodes_path.len() < 3 {
-            return Err(GraphError::InvalidOsmData(
-                "Restriction path too short".into(),
-            ));
-        }
+            let via_internal_id = *self.node_map.get(&via_member_node_id).ok_or_else(|| {
+                GraphError::InvalidOsmData("Via node for mandatory restriction not in graph".into())
+            })?;
 
-        let is_mandatory = restriction_type == TurnRestriction::Mandatory;
-        self.store_restriction(&nodes_path, is_mandatory)?;
-        Ok(())
+            let all_outgoing_edges = match self.temp_edges.get(&via_internal_id) {
+                Some(edges) => edges.clone(),
+                None => return Ok(()),
+            };
+
+            let from_way_nodes = self.restriction_member_to_nodes(rel, from_member)?;
+            let to_way_nodes = self.restriction_member_to_nodes(rel, to_member)?;
+
+            let from_node_before_via = from_way_nodes
+                .iter()
+                .rev()
+                .find(|&&n| n != via_member_node_id)
+                .ok_or_else(|| {
+                    GraphError::InvalidOsmData(
+                        "'from' way in mandatory restriction is too short".into(),
+                    )
+                })?;
+
+            let to_node_after_via = to_way_nodes
+                .iter()
+                .find(|&&n| n != via_member_node_id)
+                .ok_or_else(|| {
+                    GraphError::InvalidOsmData(
+                        "'to' way in mandatory restriction is too short".into(),
+                    )
+                })?;
+
+            for (outgoing_node_id, _) in all_outgoing_edges.iter() {
+                let outgoing_node_external_id = self.nodes[*outgoing_node_id as usize].external_id;
+
+                if outgoing_node_external_id == *to_node_after_via
+                    || outgoing_node_external_id == *from_node_before_via
+                {
+                    continue;
+                }
+
+                let synthetic_prohibitory_path = vec![
+                    *from_node_before_via,
+                    via_member_node_id,
+                    outgoing_node_external_id,
+                ];
+
+                if let Err(e) = self.store_restriction(&synthetic_prohibitory_path) {
+                    log::warn!(
+                        "Could not apply synthetic prohibitory restriction for mandatory rel {}: {}",
+                        rel.id,
+                        e.to_string()
+                    );
+                }
+            }
+
+            Ok(())
+        } else {
+            let members = self.get_ordered_restriction_members(rel)?;
+            let mut member_nodes: Vec<Vec<i64>> = Vec::new();
+            for m in members {
+                member_nodes.push(self.restriction_member_to_nodes(rel, m)?);
+            }
+            let nodes_path = self.flatten_restriction_nodes(rel, member_nodes)?;
+
+            if nodes_path.len() < 2 {
+                return Err(GraphError::InvalidOsmData(
+                    "Restriction path too short".into(),
+                ));
+            }
+
+            self.store_restriction(&nodes_path)
+        }
     }
 
-    fn store_restriction(&mut self, osm_nodes: &[i64], is_mandatory: bool) -> Result<()> {
-        if osm_nodes.len() < 3 {
+    fn store_restriction(&mut self, osm_nodes: &[i64]) -> Result<()> {
+        if osm_nodes.len() < 2 {
             return Err(GraphError::InvalidOsmData(
                 "Restriction path too short for storing".into(),
             ));
         }
 
-        let from_osm_node = osm_nodes[osm_nodes.len() - 3];
-        let via_osm_node = osm_nodes[osm_nodes.len() - 2];
-        let to_osm_node = osm_nodes[osm_nodes.len() - 1];
-
-        let from_internal_id = *self.node_map.get(&from_osm_node).ok_or_else(|| {
+        let mut cloned_path_internal_ids: Vec<u32> = Vec::with_capacity(osm_nodes.len());
+        let mut previous_internal_id = *self.node_map.get(&osm_nodes[0]).ok_or_else(|| {
             GraphError::InvalidOsmData("Restriction 'from' node not in graph".into())
         })?;
-        let via_internal_id = *self.node_map.get(&via_osm_node).ok_or_else(|| {
-            GraphError::InvalidOsmData("Restriction 'via' node not in graph".into())
-        })?;
+        cloned_path_internal_ids.push(previous_internal_id);
 
-        let (via_edge_target, from_via_cost) = self
-            .temp_edges
-            .get(&from_internal_id)
-            .and_then(|edges| {
-                edges
-                    .iter()
-                    .find(|(&id, _)| self.nodes[id as usize].external_id == via_osm_node)
-            })
-            .map(|(&id, &cost)| (id, cost))
-            .ok_or_else(|| {
-                GraphError::InvalidOsmData("Could not find 'from->via' edge in restriction".into())
-            })?;
+        for (i, current_osm_id) in osm_nodes.iter().enumerate().skip(1) {
+            let is_last_node_in_path = i == osm_nodes.len() - 1;
 
-        if via_edge_target != via_internal_id {
-            return Err(GraphError::InvalidOsmData(format!(
-                "Restriction via node mismatch. Expected internal id {}, but edge points to {}",
-                via_internal_id, via_edge_target
-            )));
+            let (target_internal_id, edge_cost) = self
+                .temp_edges
+                .get(&previous_internal_id)
+                .and_then(|edges| {
+                    edges.iter().find(|(&id, _)| self.nodes[id as usize].external_id == *current_osm_id)
+                })
+                .map(|(&id, &cost)| (id, cost))
+                .ok_or_else(|| {
+                    GraphError::InvalidOsmData(format!(
+                        "Disjointed restriction: no edge from OSM node {} (internal {}) to OSM node {}",
+                        self.nodes[previous_internal_id as usize].external_id, previous_internal_id, current_osm_id
+                    ))
+                })?;
+
+            let target_node = &self.nodes[target_internal_id as usize];
+            let target_is_phantom =
+                self.node_map.get(&target_node.external_id) != Some(&target_node.id);
+
+            let new_node_id;
+            if !is_last_node_in_path && !target_is_phantom {
+                let from_for_key = *cloned_path_internal_ids.last().unwrap();
+                let via_for_key = target_node.external_id;
+
+                if let Some(existing_phantom_id) =
+                    self.phantom_via_map.get(&(from_for_key, via_for_key))
+                {
+                    new_node_id = *existing_phantom_id;
+
+                    let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
+                    if prev_edges.contains_key(&target_internal_id) {
+                        prev_edges.remove(&target_internal_id);
+                        prev_edges.insert(new_node_id, edge_cost);
+                    }
+                } else {
+                    let cloned_node_id = self.create_phantom_node(*current_osm_id)?;
+
+                    if let Some(original_edges) = self.temp_edges.get(&target_internal_id).cloned()
+                    {
+                        self.temp_edges.insert(cloned_node_id, original_edges);
+                    }
+
+                    let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
+                    prev_edges.remove(&target_internal_id);
+                    prev_edges.insert(cloned_node_id, edge_cost);
+
+                    self.phantom_via_map
+                        .insert((from_for_key, via_for_key), cloned_node_id);
+                    new_node_id = cloned_node_id;
+                }
+            } else {
+                new_node_id = target_internal_id;
+            }
+
+            cloned_path_internal_ids.push(new_node_id);
+            previous_internal_id = new_node_id;
         }
 
-        let phantom_via_id = self.create_phantom_node(via_osm_node)?;
+        if cloned_path_internal_ids.len() >= 2 {
+            let from_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 2];
+            let to_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 1];
 
-        self.temp_edges
-            .get_mut(&from_internal_id)
-            .unwrap()
-            .remove(&via_internal_id);
-        self.temp_edges
-            .entry(from_internal_id)
-            .or_default()
-            .insert(phantom_via_id, from_via_cost);
-
-        if is_mandatory {
-            if let Some((to_target_id, to_cost)) =
-                self.temp_edges.get(&via_internal_id).and_then(|edges| {
-                    edges
-                        .iter()
-                        .find(|(&id, _)| self.nodes[id as usize].external_id == to_osm_node)
-                        .map(|d| (*d.0, *d.1))
-                })
-            {
-                self.temp_edges
-                    .entry(phantom_via_id)
-                    .or_default()
-                    .insert(to_target_id, to_cost);
-            } else {
-                return Err(GraphError::InvalidOsmData(
-                    "Could not find 'via->to' edge for mandatory restriction".into(),
-                ));
-            }
-        } else {
-            if let Some(original_via_edges) = self.temp_edges.get(&via_internal_id).cloned() {
-                let phantom_edges = self.temp_edges.entry(phantom_via_id).or_default();
-                for (target_id, cost) in original_via_edges {
-                    if self.nodes[target_id as usize].external_id != to_osm_node {
-                        phantom_edges.insert(target_id, cost);
-                    }
-                }
+            if let Some(edges) = self.temp_edges.get_mut(&from_id) {
+                edges.remove(&to_id);
             }
         }
 
@@ -284,7 +369,6 @@ impl<'a> GraphBuilder<'a> {
         let phantom_osm_id = self.phantom_node_counter;
         let phantom_internal_id =
             self.get_or_create_internal_node(phantom_osm_id, original_node_id);
-
         Ok(phantom_internal_id)
     }
 
@@ -423,38 +507,46 @@ impl<'a> GraphBuilder<'a> {
             ));
         }
 
-        let mut path = Vec::new();
+        let mut path: Vec<i64>;
         let mut from_way = members_nodes.remove(0);
+
+        if members_nodes.is_empty() {
+            return Err(GraphError::InvalidOsmData(
+                "Restriction needs at least 'from' and 'to'/'via' members".into(),
+            ));
+        }
+
         let next_way_start = *members_nodes[0].first().unwrap();
         let next_way_end = *members_nodes[0].last().unwrap();
 
-        if *from_way.first().unwrap() == next_way_start
-            || *from_way.first().unwrap() == next_way_end
-        {
-            from_way.reverse();
-        }
-
         if *from_way.last().unwrap() != next_way_start && *from_way.last().unwrap() != next_way_end
         {
-            return Err(GraphError::InvalidOsmData("Disjoined 'from' member".into()));
+            if *from_way.first().unwrap() == next_way_start
+                || *from_way.first().unwrap() == next_way_end
+            {
+                from_way.reverse();
+            } else {
+                return Err(GraphError::InvalidOsmData(
+                    "Disjoined 'from' member in restriction".into(),
+                ));
+            }
         }
 
-        path.extend_from_slice(if from_way.len() >= 2 {
-            &from_way[from_way.len() - 2..]
-        } else {
-            &from_way
-        });
+        path = from_way;
 
         for i in 0..members_nodes.len() {
             let mut current_way = members_nodes[i].clone();
+
             if *path.last().unwrap() == *current_way.last().unwrap() {
                 current_way.reverse();
             }
+
             if *path.last().unwrap() != *current_way.first().unwrap() {
                 return Err(GraphError::InvalidOsmData(
-                    "Disjoined 'via' or 'to' member".into(),
+                    "Disjoined 'via' or 'to' member in restriction".into(),
                 ));
             }
+
             path.extend_from_slice(&current_way[1..]);
         }
 
