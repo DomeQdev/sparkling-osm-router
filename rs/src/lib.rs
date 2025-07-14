@@ -337,6 +337,7 @@ fn unload_graph(mut cx: FunctionContext) -> JsResult<JsBoolean> {
 
     Ok(cx.boolean(true))
 }
+
 fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -346,10 +347,20 @@ fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
         None
     };
 
-    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
-        Some(g) => g.clone(),
-        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
-    };
+    if !GRAPH_STORAGE.lock().unwrap().contains_key(&graph_id) {
+        return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string());
+    }
+
+    let graph_arc = GRAPH_STORAGE
+        .lock()
+        .unwrap()
+        .get(&graph_id)
+        .unwrap()
+        .clone();
+    let graph_container = graph_arc.read().unwrap();
+    if !graph_container.profiles.contains_key(&profile_id) {
+        return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string());
+    }
 
     let queue_id = unsafe {
         let id = NEXT_QUEUE_ID;
@@ -357,7 +368,7 @@ fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
         id
     };
 
-    let route_queue = RouteQueue::new(graph_id, graph, profile_id, max_concurrency);
+    let route_queue = RouteQueue::new(graph_id, profile_id, max_concurrency);
     ROUTE_QUEUES
         .lock()
         .unwrap()
@@ -393,8 +404,14 @@ fn process_queue(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         None => return cx.throw_error(format!("RouteQueue with ID {} not found", queue_id)),
     };
 
+    let graph_container = match GRAPH_STORAGE.lock().unwrap().get(&queue.graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(queue.graph_id).to_string()),
+    };
+
     let channel = cx.channel();
-    queue.start_processing(channel, callback);
+
+    queue.start_processing(channel, callback, graph_container);
 
     Ok(cx.undefined())
 }

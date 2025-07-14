@@ -2,7 +2,7 @@ use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Node, Profile, Relation, RelationMember, Way};
 use crate::graph::{ProcessedGraph, RouteNode, MAX_NODE_ID};
 use crate::routing::distance;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -199,84 +199,84 @@ impl<'a> GraphBuilder<'a> {
     }
 
     fn store_restriction(&mut self, osm_nodes: &[i64], is_mandatory: bool) -> Result<()> {
-        let first_node_id = *self.node_map.get(&osm_nodes[0]).unwrap();
-        let mut cloned_nodes = vec![first_node_id];
-        let mut edges_to_add: FxHashMap<(u32, u32), u32> = FxHashMap::default();
-        let mut edges_to_remove: FxHashSet<(u32, u32)> = FxHashSet::default();
+        if osm_nodes.len() < 3 {
+            return Err(GraphError::InvalidOsmData(
+                "Restriction path too short for storing".into(),
+            ));
+        }
 
-        for window in osm_nodes.windows(2) {
-            let (prev_node_id, current_osm_id) = (*cloned_nodes.last().unwrap(), window[1]);
-            let (edge_to_clone, cost) = self.find_edge_to_clone(prev_node_id, current_osm_id)?;
+        let from_osm_node = osm_nodes[osm_nodes.len() - 3];
+        let via_osm_node = osm_nodes[osm_nodes.len() - 2];
+        let to_osm_node = osm_nodes[osm_nodes.len() - 1];
 
-            let is_last_segment = current_osm_id == *osm_nodes.last().unwrap();
-            let is_phantom = self.nodes[edge_to_clone as usize].external_id
-                != self
-                    .node_map
+        let from_internal_id = *self.node_map.get(&from_osm_node).ok_or_else(|| {
+            GraphError::InvalidOsmData("Restriction 'from' node not in graph".into())
+        })?;
+        let via_internal_id = *self.node_map.get(&via_osm_node).ok_or_else(|| {
+            GraphError::InvalidOsmData("Restriction 'via' node not in graph".into())
+        })?;
+
+        let (via_edge_target, from_via_cost) = self
+            .temp_edges
+            .get(&from_internal_id)
+            .and_then(|edges| {
+                edges
                     .iter()
-                    .find(|(_, &v)| v == edge_to_clone)
-                    .map(|(k, _)| *k)
-                    .unwrap_or(0);
-
-            if !is_phantom && !is_last_segment {
-                let new_phantom_id = self.create_phantom_node(current_osm_id)?;
-                edges_to_remove.insert((prev_node_id, edge_to_clone));
-                edges_to_add.insert((prev_node_id, new_phantom_id), cost);
-                cloned_nodes.push(new_phantom_id);
-            } else {
-                cloned_nodes.push(edge_to_clone);
-            }
-        }
-
-        for (from, to) in edges_to_remove {
-            if let Some(edges) = self.temp_edges.get_mut(&from) {
-                edges.remove(&to);
-            }
-        }
-        for ((from, to), cost) in edges_to_add {
-            self.temp_edges.entry(from).or_default().insert(to, cost);
-        }
-
-        if is_mandatory {
-            for window in cloned_nodes.windows(2) {
-                let (from_id, to_id) = (window[0], window[1]);
-                if let Some(cost) = self
-                    .temp_edges
-                    .get(&from_id)
-                    .and_then(|e| e.get(&to_id))
-                    .copied()
-                {
-                    let edges = self.temp_edges.entry(from_id).or_default();
-                    edges.clear();
-                    edges.insert(to_id, cost);
-                }
-            }
-        } else {
-            let from_id = cloned_nodes[cloned_nodes.len() - 2];
-            let to_id = *cloned_nodes.last().unwrap();
-            if let Some(edges) = self.temp_edges.get_mut(&from_id) {
-                edges.remove(&to_id);
-            }
-        }
-        Ok(())
-    }
-
-    fn find_edge_to_clone(&self, from_node_id: u32, to_osm_id: i64) -> Result<(u32, u32)> {
-        self.temp_edges
-            .get(&from_node_id)
-            .ok_or_else(|| {
-                GraphError::InvalidOsmData(
-                    "Disconnected turn restriction: 'from' node has no outgoing edges".into(),
-                )
-            })?
-            .iter()
-            .find(|(&id, _)| self.nodes[id as usize].external_id == to_osm_id)
+                    .find(|(&id, _)| self.nodes[id as usize].external_id == via_osm_node)
+            })
             .map(|(&id, &cost)| (id, cost))
             .ok_or_else(|| {
-                GraphError::InvalidOsmData(format!(
-                    "Disconnected turn restriction path: no edge from internal node {} to osm node {}",
-                    from_node_id, to_osm_id
-                ))
-            })
+                GraphError::InvalidOsmData("Could not find 'from->via' edge in restriction".into())
+            })?;
+
+        if via_edge_target != via_internal_id {
+            return Err(GraphError::InvalidOsmData(format!(
+                "Restriction via node mismatch. Expected internal id {}, but edge points to {}",
+                via_internal_id, via_edge_target
+            )));
+        }
+
+        let phantom_via_id = self.create_phantom_node(via_osm_node)?;
+
+        self.temp_edges
+            .get_mut(&from_internal_id)
+            .unwrap()
+            .remove(&via_internal_id);
+        self.temp_edges
+            .entry(from_internal_id)
+            .or_default()
+            .insert(phantom_via_id, from_via_cost);
+
+        if is_mandatory {
+            if let Some((to_target_id, to_cost)) =
+                self.temp_edges.get(&via_internal_id).and_then(|edges| {
+                    edges
+                        .iter()
+                        .find(|(&id, _)| self.nodes[id as usize].external_id == to_osm_node)
+                        .map(|d| (*d.0, *d.1))
+                })
+            {
+                self.temp_edges
+                    .entry(phantom_via_id)
+                    .or_default()
+                    .insert(to_target_id, to_cost);
+            } else {
+                return Err(GraphError::InvalidOsmData(
+                    "Could not find 'via->to' edge for mandatory restriction".into(),
+                ));
+            }
+        } else {
+            if let Some(original_via_edges) = self.temp_edges.get(&via_internal_id).cloned() {
+                let phantom_edges = self.temp_edges.entry(phantom_via_id).or_default();
+                for (target_id, cost) in original_via_edges {
+                    if self.nodes[target_id as usize].external_id != to_osm_node {
+                        phantom_edges.insert(target_id, cost);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn create_phantom_node(&mut self, original_node_id: i64) -> Result<u32> {
@@ -285,10 +285,6 @@ impl<'a> GraphBuilder<'a> {
         let phantom_internal_id =
             self.get_or_create_internal_node(phantom_osm_id, original_node_id);
 
-        let original_internal_id = *self.node_map.get(&original_node_id).unwrap();
-        if let Some(edges) = self.temp_edges.get(&original_internal_id) {
-            self.temp_edges.insert(phantom_internal_id, edges.clone());
-        }
         Ok(phantom_internal_id)
     }
 

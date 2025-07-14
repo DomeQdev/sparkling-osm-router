@@ -1,4 +1,6 @@
+use crate::core::errors::GraphError;
 use crate::graph::GraphContainer;
+use crate::routing::algorithm::find_route_astar;
 use neon::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -15,7 +17,7 @@ pub struct RouteQueue {
     queue: Arc<Mutex<VecDeque<RouteRequest>>>,
     active_count: Arc<Mutex<usize>>,
     pub max_concurrency: usize,
-    graph_container: Arc<std::sync::RwLock<GraphContainer>>,
+
     profile_id: String,
     callback: Arc<Mutex<Option<Root<JsFunction>>>>,
     pub graph_id: i32,
@@ -24,12 +26,7 @@ pub struct RouteQueue {
 impl Finalize for RouteQueue {}
 
 impl RouteQueue {
-    pub fn new(
-        graph_id: i32,
-        graph_container: Arc<std::sync::RwLock<GraphContainer>>,
-        profile_id: String,
-        max_concurrency: Option<usize>,
-    ) -> Self {
+    pub fn new(graph_id: i32, profile_id: String, max_concurrency: Option<usize>) -> Self {
         let actual_concurrency = max_concurrency.unwrap_or_else(|| {
             let cpu_count = num_cpus::get();
             if cpu_count > 1 {
@@ -43,7 +40,6 @@ impl RouteQueue {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             active_count: Arc::new(Mutex::new(0)),
             max_concurrency: actual_concurrency,
-            graph_container,
             profile_id,
             callback: Arc::new(Mutex::new(None)),
             graph_id,
@@ -64,33 +60,45 @@ impl RouteQueue {
         id
     }
 
-    pub fn start_processing(&self, channel: Channel, callback: Root<JsFunction>) {
+    pub fn start_processing(
+        &self,
+        channel: Channel,
+        callback: Root<JsFunction>,
+        graph_container: Arc<std::sync::RwLock<GraphContainer>>,
+    ) {
         *self.callback.lock().unwrap() = Some(callback);
 
         let tasks_to_start = self.max_concurrency.min(self.queue_size());
         for _ in 0..tasks_to_start {
-            self.process_next(channel.clone());
+            self.process_next(channel.clone(), graph_container.clone());
         }
     }
 
-    fn process_next(&self, channel: Channel) {
-        let can_process = *self.active_count.lock().unwrap() < self.max_concurrency;
-        if !can_process {
-            return;
-        }
-
-        let request = { self.queue.lock().unwrap().pop_front() };
+    fn process_next(
+        &self,
+        channel: Channel,
+        graph_container: Arc<std::sync::RwLock<GraphContainer>>,
+    ) {
+        let request = {
+            let mut queue_guard = self.queue.lock().unwrap();
+            queue_guard.pop_front()
+        };
 
         if let Some(request) = request {
             *self.active_count.lock().unwrap() += 1;
 
             let self_clone = self.clone();
-            let graph_clone = self.graph_container.clone();
+            let graph_clone = graph_container.clone();
 
             crate::ROUTING_THREAD_POOL.spawn(move || {
                 let result = {
                     let graph_guard = graph_clone.read().unwrap();
-                    graph_guard.route(&self_clone.profile_id, request.start_node, request.end_node)
+                    match graph_guard.profiles.get(&self_clone.profile_id) {
+                        Some(graph) => {
+                            find_route_astar(graph, request.start_node, request.end_node)
+                        }
+                        None => Err(GraphError::ProfileNotFound(self_clone.profile_id.clone())),
+                    }
                 };
 
                 channel.send(move |mut cx| {
@@ -119,7 +127,10 @@ impl RouteQueue {
                         let args: Vec<Handle<JsValue>> = vec![id_js.upcast(), result_value];
                         let _ = callback.call(&mut cx, this, args);
                     }
-                    self_clone.process_next(cx.channel());
+
+                    if !self_clone.queue.lock().unwrap().is_empty() {
+                        self_clone.process_next(cx.channel(), graph_container);
+                    }
 
                     Ok(())
                 });
@@ -146,7 +157,6 @@ impl Clone for RouteQueue {
             queue: self.queue.clone(),
             active_count: self.active_count.clone(),
             max_concurrency: self.max_concurrency,
-            graph_container: self.graph_container.clone(),
             profile_id: self.profile_id.clone(),
             callback: self.callback.clone(),
             graph_id: self.graph_id,
