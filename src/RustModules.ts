@@ -1,4 +1,4 @@
-import { Location, OsmNode, QueueStatus, RouteResult } from "./typings";
+import { Location, OsmNode, OsmWay, QueueStatus, RouteResult } from "./typings";
 
 const binding = require("../index.node");
 
@@ -20,6 +20,14 @@ export const getNodesInRadius: (
     lat: number,
     radiusMeters: number
 ) => OsmNode[] = binding.getNodesInRadius;
+
+export const getWaysInRadius: (
+    graphId: number,
+    profileId: string,
+    lon: number,
+    lat: number,
+    radiusMeters: number
+) => OsmWay[] = binding.getWaysInRadius;
 
 export const getRoute: (
     graphId: number,

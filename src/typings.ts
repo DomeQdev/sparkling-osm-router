@@ -10,6 +10,12 @@ export interface OsmNode {
     tags: Record<string, string>;
 }
 
+export interface OsmWay {
+    id: number;
+    tags: Record<string, string>;
+    nodes: OsmNode[];
+}
+
 export interface QueueStatus {
     queuedTasks: number;
     activeTasks: number;

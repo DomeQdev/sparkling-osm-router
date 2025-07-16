@@ -14,6 +14,7 @@ export type GraphOptions = {
         timeout?: number;
         retries?: number;
         retryDelay?: number;
+        ignoreTurnRestrictions?: boolean;
     };
 };
 
@@ -69,9 +70,7 @@ class Graph {
         const query = `[out:xml][timeout:${overpassOptions.timeout || 1e4}];
             (${overpassOptions.query.map((query) => `${query}(poly: "${bounds}");`).join("\n")});
 
-            >->.n;
-            <->.r;
-            (._;.n;.r;);
+            ${!overpassOptions.ignoreTurnRestrictions ? ">->.n; <->.r; (._;.n;.r;);" : ""}
         out;`;
 
         return {

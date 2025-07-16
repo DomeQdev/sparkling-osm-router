@@ -233,6 +233,71 @@ fn get_nodes_in_radius(mut cx: FunctionContext) -> JsResult<JsArray> {
     Ok(js_array)
 }
 
+fn get_ways_in_radius(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
+    let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
+    let lon = cx.argument::<JsNumber>(2)?.value(&mut cx);
+    let lat = cx.argument::<JsNumber>(3)?.value(&mut cx);
+    let radius_meters = cx.argument::<JsNumber>(4)?.value(&mut cx);
+
+    let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
+        Some(g) => g.clone(),
+        None => return cx.throw_error(GraphError::GraphNotFound(graph_id).to_string()),
+    };
+
+    let graph_guard = graph.read().unwrap();
+    let profile_graph = match graph_guard.profiles.get(&profile_id) {
+        Some(pg) => pg,
+        None => return cx.throw_error(GraphError::ProfileNotFound(profile_id).to_string()),
+    };
+
+    let found_ways = profile_graph.find_ways_within_radius(lon, lat, radius_meters);
+
+    let js_array = JsArray::new(&mut cx, found_ways.len() as usize);
+    for (i, way_info) in found_ways.iter().enumerate() {
+        let js_way = cx.empty_object();
+
+        let id_val = cx.number(way_info.osm_id as f64);
+        js_way.set(&mut cx, "id", id_val)?;
+
+        let tags_obj = cx.empty_object();
+        for (key, value) in &way_info.tags {
+            let value_js = cx.string(value);
+            tags_obj.set(&mut cx, key.as_str(), value_js)?;
+        }
+        js_way.set(&mut cx, "tags", tags_obj)?;
+
+        let js_nodes = JsArray::new(&mut cx, way_info.node_ids.len() as usize);
+        for (j, &node_id) in way_info.node_ids.iter().enumerate() {
+            let node = &profile_graph.nodes[node_id as usize];
+            let js_node = cx.empty_object();
+
+            let node_id_val = cx.number(node.external_id as f64);
+            js_node.set(&mut cx, "id", node_id_val)?;
+
+            let location_array = JsArray::new(&mut cx, 2);
+            let node_lon = cx.number(node.lon);
+            let node_lat = cx.number(node.lat);
+            location_array.set(&mut cx, 0, node_lon)?;
+            location_array.set(&mut cx, 1, node_lat)?;
+            js_node.set(&mut cx, "location", location_array)?;
+
+            let node_tags_obj = cx.empty_object();
+            for (key, value) in &node.tags {
+                let value_js = cx.string(value);
+                node_tags_obj.set(&mut cx, key.as_str(), value_js)?;
+            }
+            js_node.set(&mut cx, "tags", node_tags_obj)?;
+
+            js_nodes.set(&mut cx, j as u32, js_node)?;
+        }
+        js_way.set(&mut cx, "nodes", js_nodes)?;
+
+        js_array.set(&mut cx, i as u32, js_way)?;
+    }
+    Ok(js_array)
+}
+
 fn get_node(mut cx: FunctionContext) -> JsResult<JsValue> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -448,6 +513,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("getRoute", get_route)?;
     cx.export_function("getNearestNode", get_nearest_node)?;
     cx.export_function("getNodesInRadius", get_nodes_in_radius)?;
+    cx.export_function("getWaysInRadius", get_ways_in_radius)?;
     cx.export_function("getNode", get_node)?;
     cx.export_function("getShape", get_shape)?;
 

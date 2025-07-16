@@ -1,6 +1,6 @@
 use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Node, Profile, Relation, RelationMember, Way};
-use crate::graph::{ProcessedGraph, RouteNode, MAX_NODE_ID};
+use crate::graph::{ProcessedGraph, RouteNode, WayInfo};
 use crate::routing::distance;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -22,6 +22,7 @@ pub struct GraphBuilder<'a> {
     next_internal_id: u32,
     nodes: Vec<RouteNode>,
     temp_edges: FxHashMap<u32, FxHashMap<u32, u32>>,
+    processed_ways: Vec<(i64, Vec<i64>, HashMap<String, String>)>,
 
     phantom_node_counter: i64,
     way_node_map: FxHashMap<i64, Vec<i64>>,
@@ -45,7 +46,8 @@ impl<'a> GraphBuilder<'a> {
             next_internal_id: 0,
             nodes: Vec::new(),
             temp_edges: FxHashMap::default(),
-            phantom_node_counter: MAX_NODE_ID,
+            processed_ways: Vec::new(),
+            phantom_node_counter: 0x0008_0000_0000_0000,
             way_node_map: FxHashMap::default(),
             phantom_via_map: FxHashMap::default(),
         }
@@ -63,6 +65,8 @@ impl<'a> GraphBuilder<'a> {
                 if valid_nodes.len() < 2 {
                     continue;
                 }
+                self.processed_ways
+                    .push((way.id, valid_nodes.clone(), way.tags.clone()));
                 self.way_node_map.insert(way.id, valid_nodes.clone());
                 for &osm_node_id in &valid_nodes {
                     self.get_or_create_internal_node(osm_node_id, osm_node_id);
@@ -89,6 +93,18 @@ impl<'a> GraphBuilder<'a> {
 
     fn finalize_graph(self) -> Result<ProcessedGraph> {
         let mut graph = ProcessedGraph::new();
+        graph.ways = self
+            .processed_ways
+            .into_iter()
+            .map(|(osm_id, node_refs, tags)| WayInfo {
+                osm_id,
+                node_ids: node_refs
+                    .iter()
+                    .map(|osm_node_id| *self.node_map.get(osm_node_id).unwrap())
+                    .collect(),
+                tags,
+            })
+            .collect();
         graph.nodes = self.nodes;
         graph.node_id_map = self.node_map;
         let node_count = graph.nodes.len();
