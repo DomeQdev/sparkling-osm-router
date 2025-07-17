@@ -68,10 +68,9 @@ class Graph {
             .join(" ");
 
         const query = `[out:xml][timeout:${overpassOptions.timeout || 1e4}];
-            (${overpassOptions.query.map((query) => `${query}(poly: "${bounds}");`).join("\n")});
-
-            ${!overpassOptions.ignoreTurnRestrictions ? ">->.n; <->.r; (._;.n;.r;);" : ""}
-        out;`;
+        (${overpassOptions.query.map((query) => `${query}(poly: "${bounds}");`).join("\n")});
+        ${!overpassOptions.ignoreTurnRestrictions ? ">->.n; <->.r; (._;.n;.r;);" : ""}
+        out body; >; out skel qt;`;
 
         return {
             query,

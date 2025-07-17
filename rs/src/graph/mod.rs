@@ -95,10 +95,55 @@ impl ProcessedGraph {
         self.spatial_index = RTree::bulk_load(spatial_ways);
     }
 
+    fn find_nearest_point_on_way(
+        &self,
+        way_info: &WayInfo,
+        query_point: [f64; 2],
+    ) -> Option<(i64, f64)> {
+        if way_info.node_ids.is_empty() {
+            return None;
+        }
+
+        if way_info.node_ids.len() == 1 {
+            let node = &self.nodes[way_info.node_ids[0] as usize];
+            let node_point = [node.lon, node.lat];
+            let distance_sq = squared_distance(&query_point, &node_point);
+            return Some((node.external_id, distance_sq));
+        }
+
+        let mut min_distance_sq = f64::MAX;
+        let mut nearest_node_external_id = None;
+
+        for window in way_info.node_ids.windows(2) {
+            let node1 = &self.nodes[window[0] as usize];
+            let node2 = &self.nodes[window[1] as usize];
+
+            let p1 = [node1.lon, node1.lat];
+            let p2 = [node2.lon, node2.lat];
+
+            let dist_sq = point_to_segment_distance(&query_point, &p1, &p2);
+
+            if dist_sq < min_distance_sq {
+                min_distance_sq = dist_sq;
+
+                let dist_to_node1_sq = squared_distance(&query_point, &p1);
+                let dist_to_node2_sq = squared_distance(&query_point, &p2);
+
+                nearest_node_external_id = Some(if dist_to_node1_sq <= dist_to_node2_sq {
+                    node1.external_id
+                } else {
+                    node2.external_id
+                });
+            }
+        }
+
+        nearest_node_external_id.map(|id| (id, min_distance_sq))
+    }
+
     pub fn find_nearest_node(&self, lon: f64, lat: f64) -> Result<i64> {
-        let mut search_radius_deg = 0.001; // Approx 111 meters
+        let query_point = [lon, lat];
+        let mut search_radius_deg = 0.001;
         for _ in 0..5 {
-            // 5 attempts with increasing radius
             let min_p = [lon - search_radius_deg, lat - search_radius_deg];
             let max_p = [lon + search_radius_deg, lat + search_radius_deg];
             let search_aabb = AABB::from_corners(min_p, max_p);
@@ -107,16 +152,15 @@ impl ProcessedGraph {
                 .spatial_index
                 .locate_in_envelope_intersecting(&search_aabb);
 
-            if let Some(closest_node) = candidate_ways
-                .flat_map(|spatial_way| &self.ways[spatial_way.way_idx].node_ids)
-                .map(|&node_id| &self.nodes[node_id as usize])
-                .min_by(|a, b| {
-                    let dist_a = (a.lon - lon).powi(2) + (a.lat - lat).powi(2);
-                    let dist_b = (b.lon - lon).powi(2) + (b.lat - lat).powi(2);
-                    dist_a.partial_cmp(&dist_b).unwrap_or(Ordering::Equal)
+            let closest_candidate = candidate_ways
+                .filter_map(|spatial_way| {
+                    let way_info = &self.ways[spatial_way.way_idx];
+                    self.find_nearest_point_on_way(way_info, query_point)
                 })
-            {
-                return Ok(closest_node.external_id);
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+
+            if let Some((node_external_id, _distance_sq)) = closest_candidate {
+                return Ok(node_external_id);
             }
 
             search_radius_deg *= 2.0;
@@ -188,4 +232,29 @@ impl GraphContainer {
             graph.build_indices();
         }
     }
+}
+
+pub fn squared_distance(p1: &[f64; 2], p2: &[f64; 2]) -> f64 {
+    (p1[0] - p2[0]).powi(2) + (p1[1] - p2[1]).powi(2)
+}
+
+pub fn point_to_segment_distance(p: &[f64; 2], a: &[f64; 2], b: &[f64; 2]) -> f64 {
+    let ab_x = b[0] - a[0];
+    let ab_y = b[1] - a[1];
+
+    if ab_x.abs() < 1e-10 && ab_y.abs() < 1e-10 {
+        return squared_distance(p, a);
+    }
+
+    let ap_x = p[0] - a[0];
+    let ap_y = p[1] - a[1];
+
+    let t = (ap_x * ab_x + ap_y * ab_y) / (ab_x * ab_x + ab_y * ab_y);
+
+    let t_clamped = t.max(0.0).min(1.0);
+
+    let closest_x = a[0] + t_clamped * ab_x;
+    let closest_y = a[1] + t_clamped * ab_y;
+
+    (p[0] - closest_x).powi(2) + (p[1] - closest_y).powi(2)
 }
