@@ -24,9 +24,9 @@ class RouteQueue {
         this.enableProgressBar = enableProgressBar;
     }
 
-    enqueueRoute = (routeId: string, startNode: number, endNode: number) => {
+    enqueueRoute = (routeId: string, waypoints: number[]) => {
         if (this.processing) throw new Error("Queue is already processing. Cannot enqueue new routes.");
-        return enqueueRoute(this.queueId, routeId, startNode, endNode);
+        return enqueueRoute(this.queueId, routeId, waypoints);
     };
 
     getStatus = () => {

@@ -122,8 +122,12 @@ fn load_graph(mut cx: FunctionContext) -> JsResult<JsNumber> {
 fn get_route(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let graph_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let profile_id = cx.argument::<JsString>(1)?.value(&mut cx);
-    let start_node = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
-    let end_node = cx.argument::<JsNumber>(3)?.value(&mut cx) as i64;
+    let waypoints_js = cx.argument::<JsArray>(2)?;
+    let waypoints: Vec<i64> = waypoints_js
+        .to_vec(&mut cx)?
+        .into_iter()
+        .map(|v| v.downcast::<JsNumber, _>(&mut cx).unwrap().value(&mut cx) as i64)
+        .collect();
 
     let graph = match GRAPH_STORAGE.lock().unwrap().get(&graph_id) {
         Some(g) => g.clone(),
@@ -134,10 +138,7 @@ fn get_route(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let channel = cx.channel();
 
     ROUTING_THREAD_POOL.spawn(move || {
-        let result = graph
-            .read()
-            .unwrap()
-            .route(&profile_id, start_node, end_node);
+        let result = graph.read().unwrap().route(&profile_id, &waypoints);
         deferred.settle_with(&channel, move |mut cx| match result {
             Ok(Some(nodes)) => {
                 let js_result = cx.empty_object();
@@ -444,8 +445,12 @@ fn create_route_queue(mut cx: FunctionContext) -> JsResult<JsNumber> {
 fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let route_id = cx.argument::<JsString>(1)?.value(&mut cx);
-    let start_node = cx.argument::<JsNumber>(2)?.value(&mut cx) as i64;
-    let end_node = cx.argument::<JsNumber>(3)?.value(&mut cx) as i64;
+    let waypoints_js = cx.argument::<JsArray>(2)?;
+    let waypoints: Vec<i64> = waypoints_js
+        .to_vec(&mut cx)?
+        .into_iter()
+        .map(|v| v.downcast::<JsNumber, _>(&mut cx).unwrap().value(&mut cx) as i64)
+        .collect();
 
     let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
         Some(q) => q.clone(),
@@ -454,8 +459,7 @@ fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
 
     let request_id = queue.enqueue(RouteRequest {
         id: route_id,
-        start_node,
-        end_node,
+        waypoints,
     });
     Ok(cx.string(request_id))
 }

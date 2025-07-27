@@ -1,6 +1,4 @@
-use crate::core::errors::GraphError;
 use crate::graph::GraphContainer;
-use crate::routing::algorithm::find_route_astar;
 use neon::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -9,8 +7,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct RouteRequest {
     pub id: String,
-    pub start_node: i64,
-    pub end_node: i64,
+    pub waypoints: Vec<i64>,
 }
 
 pub struct RouteQueue {
@@ -93,12 +90,8 @@ impl RouteQueue {
             crate::ROUTING_THREAD_POOL.spawn(move || {
                 let result = {
                     let graph_guard = graph_clone.read().unwrap();
-                    match graph_guard.profiles.get(&self_clone.profile_id) {
-                        Some(graph) => {
-                            find_route_astar(graph, request.start_node, request.end_node)
-                        }
-                        None => Err(GraphError::ProfileNotFound(self_clone.profile_id.clone())),
-                    }
+
+                    graph_guard.route(&self_clone.profile_id, &request.waypoints)
                 };
 
                 channel.send(move |mut cx| {

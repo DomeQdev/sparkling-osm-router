@@ -109,10 +109,10 @@ class Profile {
         return getWaysInRadius(this.graph.graphId, this.rawProfile.id, lon, lat, radiusMeters);
     };
 
-    getRoute = async (startNode: number, endNode: number) => {
+    getRoute = async (waypoints: number[]) => {
         if (this.graph.graphId === null) throw new Error("Graph is not loaded.");
 
-        return getRoute(this.graph.graphId, this.rawProfile.id, startNode, endNode);
+        return getRoute(this.graph.graphId, this.rawProfile.id, waypoints);
     };
 
     getNode = (node: number): OsmNode | null => {

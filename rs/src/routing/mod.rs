@@ -1,21 +1,22 @@
 pub mod algorithm;
 
-use crate::core::errors::Result;
+use crate::core::errors::{GraphError, Result};
 use crate::graph::GraphContainer;
-use algorithm::find_route_astar;
+use algorithm::find_route_through_waypoints;
 
 impl GraphContainer {
-    pub fn route(
-        &self,
-        profile_id: &str,
-        start_node_id: i64,
-        end_node_id: i64,
-    ) -> Result<Option<Vec<i64>>> {
+    pub fn route(&self, profile_id: &str, waypoints: &[i64]) -> Result<Option<Vec<i64>>> {
+        if waypoints.len() < 2 {
+            return Err(GraphError::RoutingError(
+                "At least two waypoints are required for routing.".to_string(),
+            ));
+        }
+
         let route_graph = self.profiles.get(profile_id).ok_or_else(|| {
             crate::core::errors::GraphError::ProfileNotFound(profile_id.to_string())
         })?;
 
-        find_route_astar(route_graph, start_node_id, end_node_id)
+        find_route_through_waypoints(route_graph, waypoints)
     }
 }
 

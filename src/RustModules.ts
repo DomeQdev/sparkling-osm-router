@@ -32,14 +32,13 @@ export const getWaysInRadius: (
 export const getRoute: (
     graphId: number,
     profileId: string,
-    startNode: number,
-    endNode: number
+    waypoints: number[]
 ) => Promise<RouteResult | null> = binding.getRoute;
 
 export const createRouteQueue: (graphId: number, profileId: string, maxConcurrency?: number) => number =
     binding.createRouteQueue;
 
-export const enqueueRoute: (queueId: number, routeId: string, startNode: number, endNode: number) => string =
+export const enqueueRoute: (queueId: number, routeId: string, waypoints: number[]) => string =
     binding.enqueueRoute;
 
 export const processQueue: (
