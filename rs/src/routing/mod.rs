@@ -20,7 +20,7 @@ impl GraphContainer {
     }
 }
 
-pub fn distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub fn distance(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
     let r = 6371.0;
     let lat1_rad = lat1.to_radians();
     let lat2_rad = lat2.to_radians();

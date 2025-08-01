@@ -12,17 +12,53 @@ enum TurnRestriction {
     Mandatory,
 }
 
+struct StringInterner {
+    map: FxHashMap<String, u32>,
+    vec: Vec<String>,
+}
+
+impl StringInterner {
+    fn new() -> Self {
+        Self {
+            map: FxHashMap::default(),
+            vec: Vec::new(),
+        }
+    }
+
+    fn intern(&mut self, s: &str) -> u32 {
+        if let Some(id) = self.map.get(s) {
+            return *id;
+        }
+        let id = self.vec.len() as u32;
+        let s_owned = s.to_owned();
+        self.map.insert(s_owned.clone(), id);
+        self.vec.push(s_owned);
+        id
+    }
+}
+
+struct InternedProfile {
+    key: u32,
+    penalties: FxHashMap<u32, f64>,
+    default_penalty: Option<u32>,
+    access_tags: Vec<u32>,
+    oneway_tags: Vec<u32>,
+    except_tags: Vec<u32>,
+}
+
 pub struct GraphBuilder<'a> {
-    profile: &'a Profile,
     raw_nodes: &'a HashMap<i64, Node>,
     raw_ways: &'a HashMap<i64, Way>,
     raw_relations: &'a HashMap<i64, Relation>,
 
+    interner: StringInterner,
+    profile: InternedProfile,
+
     node_map: FxHashMap<i64, u32>,
     next_internal_id: u32,
     nodes: Vec<RouteNode>,
-    temp_edges: FxHashMap<u32, FxHashMap<u32, u32>>,
-    processed_ways: Vec<(i64, Vec<i64>, HashMap<String, String>)>,
+    temp_edges: FxHashMap<u32, FxHashMap<u32, u16>>,
+    processed_ways: Vec<(i64, Vec<i64>, FxHashMap<u32, u32>)>,
 
     phantom_node_counter: i64,
     way_node_map: FxHashMap<i64, Vec<i64>>,
@@ -37,11 +73,40 @@ impl<'a> GraphBuilder<'a> {
         raw_ways: &'a HashMap<i64, Way>,
         raw_relations: &'a HashMap<i64, Relation>,
     ) -> Self {
+        let mut interner = StringInterner::new();
+
+        let interned_profile = InternedProfile {
+            key: interner.intern(&profile.key),
+            penalties: profile
+                .penalties
+                .penalties
+                .iter()
+                .map(|(k, v)| (interner.intern(k), *v))
+                .collect(),
+            default_penalty: profile.penalties.default,
+            access_tags: profile
+                .access_tags
+                .iter()
+                .map(|tag| interner.intern(tag))
+                .collect(),
+            oneway_tags: profile
+                .oneway_tags
+                .iter()
+                .map(|tag| interner.intern(tag))
+                .collect(),
+            except_tags: profile
+                .except_tags
+                .iter()
+                .map(|tag| interner.intern(tag))
+                .collect(),
+        };
+
         GraphBuilder {
-            profile,
             raw_nodes,
             raw_ways,
             raw_relations,
+            interner,
+            profile: interned_profile,
             node_map: FxHashMap::default(),
             next_internal_id: 0,
             nodes: Vec::new(),
@@ -65,8 +130,15 @@ impl<'a> GraphBuilder<'a> {
                 if valid_nodes.len() < 2 {
                     continue;
                 }
+
+                let interned_tags = way
+                    .tags
+                    .iter()
+                    .map(|(k, v)| (self.interner.intern(k), self.interner.intern(v)))
+                    .collect();
+
                 self.processed_ways
-                    .push((way.id, valid_nodes.clone(), way.tags.clone()));
+                    .push((way.id, valid_nodes.clone(), interned_tags));
                 self.way_node_map.insert(way.id, valid_nodes.clone());
                 for &osm_node_id in &valid_nodes {
                     self.get_or_create_internal_node(osm_node_id, osm_node_id);
@@ -107,6 +179,8 @@ impl<'a> GraphBuilder<'a> {
             .collect();
         graph.nodes = self.nodes;
         graph.node_id_map = self.node_map;
+        graph.string_interner = self.interner.vec;
+
         let node_count = graph.nodes.len();
         graph.offsets.resize(node_count + 1, 0);
 
@@ -122,6 +196,29 @@ impl<'a> GraphBuilder<'a> {
         }
         graph.offsets[node_count] = edge_count;
 
+        let mut temp_reversed_edges: FxHashMap<u32, Vec<(u32, u16)>> = FxHashMap::default();
+        for (&from_id, neighbors) in self.temp_edges.iter() {
+            for (&to_id, &cost) in neighbors.iter() {
+                temp_reversed_edges
+                    .entry(to_id)
+                    .or_default()
+                    .push((from_id, cost));
+            }
+        }
+
+        graph.reversed_offsets.resize(node_count + 1, 0);
+        let mut reversed_edge_count = 0;
+        for internal_id in 0..node_count as u32 {
+            graph.reversed_offsets[internal_id as usize] = reversed_edge_count;
+            if let Some(in_neighbors) = temp_reversed_edges.get(&internal_id) {
+                for &(source, cost) in in_neighbors.iter() {
+                    graph.reversed_edges.push((source, cost));
+                }
+                reversed_edge_count += in_neighbors.len();
+            }
+        }
+        graph.reversed_offsets[node_count] = reversed_edge_count;
+
         graph.build_indices();
         Ok(graph)
     }
@@ -136,32 +233,50 @@ impl<'a> GraphBuilder<'a> {
         self.next_internal_id += 1;
 
         let raw_node = self.raw_nodes.get(&external_id).unwrap();
+        let interned_tags = raw_node
+            .tags
+            .iter()
+            .map(|(k, v)| (self.interner.intern(k), self.interner.intern(v)))
+            .collect();
+
         self.nodes.push(RouteNode {
             id: internal_id,
             external_id,
-            lat: raw_node.lat,
-            lon: raw_node.lon,
-            tags: raw_node.tags.clone(),
+            lat: raw_node.lat as f32,
+            lon: raw_node.lon as f32,
+            tags: interned_tags,
         });
 
         internal_id
     }
 
-    fn is_way_usable(&self, way: &Way) -> bool {
-        let penalty = self.get_way_penalty(&way.tags);
+    fn is_way_usable(&mut self, way: &Way) -> bool {
+        let interned_tags: FxHashMap<u32, u32> = way
+            .tags
+            .iter()
+            .map(|(k, v)| (self.interner.intern(k), self.interner.intern(v)))
+            .collect();
+
+        let penalty = self.get_way_penalty(&interned_tags);
         if penalty.is_none() || !penalty.unwrap().is_finite() || penalty.unwrap() < 1.0 {
             return false;
         }
-        let (forward, backward) = self.get_way_direction(&way.tags);
+        let (forward, backward) = self.get_way_direction(&interned_tags);
         !(!forward && !backward)
     }
 
     fn add_way(&mut self, way: &Way) {
-        let penalty = match self.get_way_penalty(&way.tags) {
+        let interned_tags: FxHashMap<u32, u32> = way
+            .tags
+            .iter()
+            .map(|(k, v)| (self.interner.intern(k), self.interner.intern(v)))
+            .collect();
+
+        let penalty = match self.get_way_penalty(&interned_tags) {
             Some(p) if p.is_finite() && p >= 1.0 => p,
             _ => return,
         };
-        let (forward, backward) = self.get_way_direction(&way.tags);
+        let (forward, backward) = self.get_way_direction(&interned_tags);
         if !forward && !backward {
             return;
         }
@@ -171,8 +286,9 @@ impl<'a> GraphBuilder<'a> {
                 let (from_osm, to_osm) = (window[0], window[1]);
                 let from_node = self.raw_nodes.get(&from_osm).unwrap();
                 let to_node = self.raw_nodes.get(&to_osm).unwrap();
-                let distance = distance(from_node.lat, from_node.lon, to_node.lat, to_node.lon);
-                let cost = (distance * penalty * 1000.0) as u32;
+                let distance =
+                    distance(from_node.lat as f32, from_node.lon as f32, to_node.lat as f32, to_node.lon as f32);
+                let cost = (distance * penalty as f32 * 1000.0) as u16;
 
                 let from_id = *self.node_map.get(&from_osm).unwrap();
                 let to_id = *self.node_map.get(&to_osm).unwrap();
@@ -194,7 +310,13 @@ impl<'a> GraphBuilder<'a> {
     }
 
     fn add_relation(&mut self, rel: &Relation) -> Result<()> {
-        let restriction_type = self.get_restriction_type(&rel.tags);
+        let interned_tags: FxHashMap<u32, u32> = rel
+            .tags
+            .iter()
+            .map(|(k, v)| (self.interner.intern(k), self.interner.intern(v)))
+            .collect();
+        let restriction_type = self.get_restriction_type(&interned_tags);
+
         if restriction_type == TurnRestriction::Inapplicable {
             return Ok(());
         }
@@ -388,72 +510,122 @@ impl<'a> GraphBuilder<'a> {
         Ok(phantom_internal_id)
     }
 
-    fn get_way_penalty(&self, tags: &HashMap<String, String>) -> Option<f64> {
+    fn get_way_penalty(&self, tags: &FxHashMap<u32, u32>) -> Option<f64> {
         if !self.is_way_accessible(tags) {
             return None;
         }
         tags.get(&self.profile.key)
-            .and_then(|val| self.profile.penalties.penalties.get(val))
+            .and_then(|val_id| self.profile.penalties.get(val_id))
             .copied()
-            .or_else(|| self.profile.penalties.default.map(|p| p as f64))
+            .or_else(|| self.profile.default_penalty.map(|p| p as f64))
     }
 
-    fn is_way_accessible(&self, tags: &HashMap<String, String>) -> bool {
-        for tag in self.profile.access_tags.iter() {
-            if let Some(val) = tags.get(tag) {
-                return !matches!(val.as_str(), "no" | "private" | "false");
+    fn is_way_accessible(&self, tags: &FxHashMap<u32, u32>) -> bool {
+        let no_id = self.interner.map.get("no");
+        let private_id = self.interner.map.get("private");
+        let false_id = self.interner.map.get("false");
+
+        for tag_id in self.profile.access_tags.iter() {
+            if let Some(val_id) = tags.get(tag_id) {
+                if Some(*val_id) == no_id.copied()
+                    || Some(*val_id) == private_id.copied()
+                    || Some(*val_id) == false_id.copied()
+                {
+                    return false;
+                }
             }
         }
         true
     }
 
-    fn get_way_direction(&self, tags: &HashMap<String, String>) -> (bool, bool) {
-        if let Some(j) = tags.get("junction") {
-            if j == "roundabout" || j == "circular" {
-                return (true, false);
+    fn get_way_direction(&self, tags: &FxHashMap<u32, u32>) -> (bool, bool) {
+        if let Some(j_id) = self.interner.map.get("junction") {
+            if let Some(val_id) = tags.get(j_id) {
+                if Some(*val_id) == self.interner.map.get("roundabout").copied()
+                    || Some(*val_id) == self.interner.map.get("circular").copied()
+                {
+                    return (true, false);
+                }
             }
         }
-        for tag in self.profile.oneway_tags.iter() {
-            if let Some(val) = tags.get(tag) {
-                return match val.as_str() {
-                    "yes" | "true" | "1" => (true, false),
-                    "-1" | "reverse" => (false, true),
-                    "no" => (true, true),
-                    _ => continue,
-                };
+        let yes_id = self.interner.map.get("yes").copied();
+        let true_id = self.interner.map.get("true").copied();
+        let one_id = self.interner.map.get("1").copied();
+        let reverse_id = self.interner.map.get("reverse").copied();
+        let minus_one_id = self.interner.map.get("-1").copied();
+        let no_id = self.interner.map.get("no").copied();
+
+        for tag_id in self.profile.oneway_tags.iter() {
+            if let Some(val_id) = tags.get(tag_id).copied() {
+                if Some(val_id) == yes_id || Some(val_id) == true_id || Some(val_id) == one_id {
+                    return (true, false);
+                }
+                if Some(val_id) == reverse_id || Some(val_id) == minus_one_id {
+                    return (false, true);
+                }
+                if Some(val_id) == no_id {
+                    return (true, true);
+                }
             }
         }
         (true, true)
     }
 
-    fn get_restriction_type(&self, tags: &HashMap<String, String>) -> TurnRestriction {
-        if tags.get("type") != Some(&"restriction".to_string()) {
+    fn get_restriction_type(&self, tags: &FxHashMap<u32, u32>) -> TurnRestriction {
+        let type_id = self.interner.map.get("type").copied();
+        let restriction_id = self.interner.map.get("restriction").copied();
+
+        if type_id.is_none() || restriction_id.is_none() {
+            return TurnRestriction::Inapplicable;
+        }
+        if tags.get(&type_id.unwrap()) != Some(&restriction_id.unwrap()) {
             return TurnRestriction::Inapplicable;
         }
         if self.is_exempted(tags) {
             return TurnRestriction::Inapplicable;
         }
 
-        let restriction_value = self
-            .profile
-            .access_tags
-            .iter()
-            .rev()
-            .find_map(|mode| tags.get(&format!("restriction:{}", mode)))
-            .or_else(|| tags.get("restriction"));
-
-        match restriction_value.map(|s| s.as_str()) {
-            Some(r) if r.starts_with("no_") => TurnRestriction::Prohibitory,
-            Some(r) if r.starts_with("only_") => TurnRestriction::Mandatory,
-            _ => TurnRestriction::Inapplicable,
+        let mut restriction_value_id = None;
+        for mode_id in self.profile.access_tags.iter().rev() {
+            let mode_str = &self.interner.vec[*mode_id as usize];
+            let key_str = format!("restriction:{}", mode_str);
+            if let Some(key_id) = self.interner.map.get(&key_str) {
+                if let Some(val_id) = tags.get(key_id) {
+                    restriction_value_id = Some(*val_id);
+                    break;
+                }
+            }
         }
+        if restriction_value_id.is_none() {
+            if let Some(val_id) = tags.get(&restriction_id.unwrap()) {
+                restriction_value_id = Some(*val_id);
+            }
+        }
+
+        if let Some(val_id) = restriction_value_id {
+            let value_str = &self.interner.vec[val_id as usize];
+            if value_str.starts_with("no_") {
+                return TurnRestriction::Prohibitory;
+            }
+            if value_str.starts_with("only_") {
+                return TurnRestriction::Mandatory;
+            }
+        }
+        TurnRestriction::Inapplicable
     }
 
-    fn is_exempted(&self, tags: &HashMap<String, String>) -> bool {
-        if let Some(except) = tags.get("except") {
-            return except
-                .split(';')
-                .any(|e| self.profile.except_tags.contains(&e.trim().to_string()));
+    fn is_exempted(&self, tags: &FxHashMap<u32, u32>) -> bool {
+        if let Some(except_key_id) = self.interner.map.get("except") {
+            if let Some(except_val_id) = tags.get(except_key_id) {
+                let except_str = &self.interner.vec[*except_val_id as usize];
+                for e_str in except_str.split(';') {
+                    if let Some(e_id) = self.interner.map.get(e_str.trim()) {
+                        if self.profile.except_tags.contains(e_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
         }
         false
     }

@@ -3,32 +3,31 @@ use rstar::{RTree, RTreeObject, AABB};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RouteNode {
     pub id: u32,
     pub external_id: i64,
-    pub lat: f64,
-    pub lon: f64,
-    pub tags: HashMap<String, String>,
+    pub lat: f32,
+    pub lon: f32,
+    pub tags: FxHashMap<u32, u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WayInfo {
     pub osm_id: i64,
     pub node_ids: Vec<u32>,
-    pub tags: HashMap<String, String>,
+    pub tags: FxHashMap<u32, u32>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SpatialWay {
     pub way_idx: usize,
-    pub aabb: AABB<[f64; 2]>,
+    pub aabb: AABB<[f32; 2]>,
 }
 
 impl RTreeObject for SpatialWay {
-    type Envelope = AABB<[f64; 2]>;
+    type Envelope = AABB<[f32; 2]>;
     fn envelope(&self) -> Self::Envelope {
         self.aabb
     }
@@ -39,7 +38,10 @@ pub struct ProcessedGraph {
     pub nodes: Vec<RouteNode>,
     pub ways: Vec<WayInfo>,
     pub offsets: Vec<usize>,
-    pub edges: Vec<(u32, u32)>,
+    pub edges: Vec<(u32, u16)>,
+    pub reversed_offsets: Vec<usize>,
+    pub reversed_edges: Vec<(u32, u16)>,
+    pub string_interner: Vec<String>,
 
     #[serde(skip)]
     pub node_id_map: FxHashMap<i64, u32>,
@@ -55,15 +57,24 @@ impl ProcessedGraph {
             ways: Vec::new(),
             offsets: Vec::new(),
             edges: Vec::new(),
+            reversed_offsets: Vec::new(),
+            reversed_edges: Vec::new(),
+            string_interner: Vec::new(),
             node_id_map: FxHashMap::default(),
             spatial_index: RTree::new(),
         }
     }
 
-    pub fn neighbors(&self, node_id: u32) -> &[(u32, u32)] {
+    pub fn neighbors(&self, node_id: u32) -> &[(u32, u16)] {
         let start = self.offsets[node_id as usize];
         let end = self.offsets[(node_id as usize) + 1];
         &self.edges[start..end]
+    }
+
+    pub fn reversed_neighbors(&self, node_id: u32) -> &[(u32, u16)] {
+        let start = self.reversed_offsets[node_id as usize];
+        let end = self.reversed_offsets[(node_id as usize) + 1];
+        &self.reversed_edges[start..end]
     }
 
     pub fn build_indices(&mut self) {
@@ -74,10 +85,10 @@ impl ProcessedGraph {
             .iter()
             .enumerate()
             .map(|(way_idx, way_info)| {
-                let mut min_lon = f64::MAX;
-                let mut min_lat = f64::MAX;
-                let mut max_lon = f64::MIN;
-                let mut max_lat = f64::MIN;
+                let mut min_lon = f32::MAX;
+                let mut min_lat = f32::MAX;
+                let mut max_lon = f32::MIN;
+                let mut max_lat = f32::MIN;
 
                 for &node_id in &way_info.node_ids {
                     let node = &self.nodes[node_id as usize];
@@ -98,8 +109,8 @@ impl ProcessedGraph {
     fn find_nearest_point_on_way(
         &self,
         way_info: &WayInfo,
-        query_point: [f64; 2],
-    ) -> Option<(i64, f64)> {
+        query_point: [f32; 2],
+    ) -> Option<(i64, f32)> {
         if way_info.node_ids.is_empty() {
             return None;
         }
@@ -111,7 +122,7 @@ impl ProcessedGraph {
             return Some((node.external_id, distance_sq));
         }
 
-        let mut min_distance_sq = f64::MAX;
+        let mut min_distance_sq = f32::MAX;
         let mut nearest_node_external_id = None;
 
         for window in way_info.node_ids.windows(2) {
@@ -140,7 +151,7 @@ impl ProcessedGraph {
         nearest_node_external_id.map(|id| (id, min_distance_sq))
     }
 
-    pub fn find_nearest_node(&self, lon: f64, lat: f64) -> Result<i64> {
+    pub fn find_nearest_node(&self, lon: f32, lat: f32) -> Result<i64> {
         let query_point = [lon, lat];
         let mut search_radius_deg = 0.001;
         for _ in 0..5 {
@@ -170,7 +181,7 @@ impl ProcessedGraph {
         ))
     }
 
-    pub fn find_ways_within_radius(&self, lon: f64, lat: f64, radius_meters: f64) -> Vec<&WayInfo> {
+    pub fn find_ways_within_radius(&self, lon: f32, lat: f32, radius_meters: f32) -> Vec<&WayInfo> {
         let radius_degrees = radius_meters / 111_100.0;
         let min_p = [lon - radius_degrees, lat - radius_degrees];
         let max_p = [lon + radius_degrees, lat + radius_degrees];
@@ -191,9 +202,9 @@ impl ProcessedGraph {
 
     pub fn find_nodes_within_radius(
         &self,
-        lon: f64,
-        lat: f64,
-        radius_meters: f64,
+        lon: f32,
+        lat: f32,
+        radius_meters: f32,
     ) -> Vec<&RouteNode> {
         let ways = self.find_ways_within_radius(lon, lat, radius_meters);
         let mut node_ids = rustc_hash::FxHashSet::default();
@@ -217,13 +228,13 @@ impl ProcessedGraph {
 
 #[derive(Serialize, Deserialize)]
 pub struct GraphContainer {
-    pub profiles: HashMap<String, ProcessedGraph>,
+    pub profiles: FxHashMap<String, ProcessedGraph>,
 }
 
 impl GraphContainer {
     pub fn new() -> Self {
         GraphContainer {
-            profiles: HashMap::new(),
+            profiles: FxHashMap::default(),
         }
     }
 
@@ -234,15 +245,15 @@ impl GraphContainer {
     }
 }
 
-pub fn squared_distance(p1: &[f64; 2], p2: &[f64; 2]) -> f64 {
+pub fn squared_distance(p1: &[f32; 2], p2: &[f32; 2]) -> f32 {
     (p1[0] - p2[0]).powi(2) + (p1[1] - p2[1]).powi(2)
 }
 
-pub fn point_to_segment_distance(p: &[f64; 2], a: &[f64; 2], b: &[f64; 2]) -> f64 {
+pub fn point_to_segment_distance(p: &[f32; 2], a: &[f32; 2], b: &[f32; 2]) -> f32 {
     let ab_x = b[0] - a[0];
     let ab_y = b[1] - a[1];
 
-    if ab_x.abs() < 1e-10 && ab_y.abs() < 1e-10 {
+    if ab_x.abs() < 1e-9 && ab_y.abs() < 1e-9 {
         return squared_distance(p, a);
     }
 
