@@ -39,8 +39,6 @@ pub struct ProcessedGraph {
     pub ways: Vec<WayInfo>,
     pub offsets: Vec<usize>,
     pub edges: Vec<(u32, u16)>,
-    pub reversed_offsets: Vec<usize>,
-    pub reversed_edges: Vec<(u32, u16)>,
     pub string_interner: Vec<String>,
 
     #[serde(skip)]
@@ -57,8 +55,6 @@ impl ProcessedGraph {
             ways: Vec::new(),
             offsets: Vec::new(),
             edges: Vec::new(),
-            reversed_offsets: Vec::new(),
-            reversed_edges: Vec::new(),
             string_interner: Vec::new(),
             node_id_map: FxHashMap::default(),
             spatial_index: RTree::new(),
@@ -69,12 +65,6 @@ impl ProcessedGraph {
         let start = self.offsets[node_id as usize];
         let end = self.offsets[(node_id as usize) + 1];
         &self.edges[start..end]
-    }
-
-    pub fn reversed_neighbors(&self, node_id: u32) -> &[(u32, u16)] {
-        let start = self.reversed_offsets[node_id as usize];
-        let end = self.reversed_offsets[(node_id as usize) + 1];
-        &self.reversed_edges[start..end]
     }
 
     pub fn build_indices(&mut self) {

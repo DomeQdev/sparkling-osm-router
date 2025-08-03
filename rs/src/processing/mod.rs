@@ -196,29 +196,6 @@ impl<'a> GraphBuilder<'a> {
         }
         graph.offsets[node_count] = edge_count;
 
-        let mut temp_reversed_edges: FxHashMap<u32, Vec<(u32, u16)>> = FxHashMap::default();
-        for (&from_id, neighbors) in self.temp_edges.iter() {
-            for (&to_id, &cost) in neighbors.iter() {
-                temp_reversed_edges
-                    .entry(to_id)
-                    .or_default()
-                    .push((from_id, cost));
-            }
-        }
-
-        graph.reversed_offsets.resize(node_count + 1, 0);
-        let mut reversed_edge_count = 0;
-        for internal_id in 0..node_count as u32 {
-            graph.reversed_offsets[internal_id as usize] = reversed_edge_count;
-            if let Some(in_neighbors) = temp_reversed_edges.get(&internal_id) {
-                for &(source, cost) in in_neighbors.iter() {
-                    graph.reversed_edges.push((source, cost));
-                }
-                reversed_edge_count += in_neighbors.len();
-            }
-        }
-        graph.reversed_offsets[node_count] = reversed_edge_count;
-
         graph.build_indices();
         Ok(graph)
     }
@@ -286,8 +263,12 @@ impl<'a> GraphBuilder<'a> {
                 let (from_osm, to_osm) = (window[0], window[1]);
                 let from_node = self.raw_nodes.get(&from_osm).unwrap();
                 let to_node = self.raw_nodes.get(&to_osm).unwrap();
-                let distance =
-                    distance(from_node.lat as f32, from_node.lon as f32, to_node.lat as f32, to_node.lon as f32);
+                let distance = distance(
+                    from_node.lat as f32,
+                    from_node.lon as f32,
+                    to_node.lat as f32,
+                    to_node.lon as f32,
+                );
                 let cost = (distance * penalty as f32 * 1000.0) as u16;
 
                 let from_id = *self.node_map.get(&from_osm).unwrap();
