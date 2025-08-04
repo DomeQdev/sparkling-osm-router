@@ -2,7 +2,7 @@ use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Node, Profile, Relation, RelationMember, Way};
 use crate::graph::{ProcessedGraph, RouteNode, WayInfo};
 use crate::routing::distance;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -62,8 +62,147 @@ pub struct GraphBuilder<'a> {
 
     phantom_node_counter: i64,
     way_node_map: FxHashMap<i64, Vec<i64>>,
+}
 
-    phantom_via_map: FxHashMap<(u32, i64), u32>,
+struct GraphChange<'a, 'b> {
+    builder: &'a mut GraphBuilder<'b>,
+    new_nodes: FxHashMap<u32, u32>,
+    edges_to_add: FxHashMap<u32, FxHashMap<u32, u16>>,
+    edges_to_remove: FxHashSet<(u32, u32)>,
+}
+
+impl<'a, 'b> GraphChange<'a, 'b> {
+    fn new(builder: &'a mut GraphBuilder<'b>) -> Self {
+        Self {
+            builder,
+            new_nodes: FxHashMap::default(),
+            edges_to_add: FxHashMap::default(),
+            edges_to_remove: FxHashSet::default(),
+        }
+    }
+
+    fn make_node_clone(&mut self, original_node_id: u32) -> Result<u32> {
+        self.builder.phantom_node_counter += 1;
+        let phantom_osm_id = self.builder.phantom_node_counter;
+
+        let original_node = &self.builder.nodes[original_node_id as usize];
+
+        let cloned_internal_id = self.builder.next_internal_id;
+        self.builder.next_internal_id += 1;
+
+        self.builder.nodes.push(RouteNode {
+            id: cloned_internal_id,
+            external_id: original_node.external_id,
+            lat: original_node.lat,
+            lon: original_node.lon,
+            tags: original_node.tags.clone(),
+        });
+
+        self.builder
+            .node_map
+            .insert(phantom_osm_id, cloned_internal_id);
+
+        self.new_nodes.insert(cloned_internal_id, original_node_id);
+
+        Ok(cloned_internal_id)
+    }
+
+    fn get_to_node_id(&self, from_node_id: u32, to_osm_id: i64) -> Option<u32> {
+        self.builder
+            .temp_edges
+            .get(&from_node_id)
+            .and_then(|edges| {
+                edges
+                    .keys()
+                    .find(|&&id| self.builder.nodes[id as usize].external_id == to_osm_id)
+            })
+            .copied()
+    }
+
+    fn plan_restriction_path(&mut self, osm_nodes: &[i64]) -> Result<Option<Vec<u32>>> {
+        if osm_nodes.len() < 3 {
+            let path: Option<Vec<u32>> = osm_nodes
+                .iter()
+                .map(|id| self.builder.node_map.get(id).copied())
+                .collect();
+            return Ok(path);
+        }
+
+        let mut cloned_nodes: Vec<u32> = vec![*self.builder.node_map.get(&osm_nodes[0]).unwrap()];
+
+        for i in 1..osm_nodes.len() {
+            let previous_node_id = *cloned_nodes.last().unwrap();
+            let current_osm_id = osm_nodes[i];
+
+            let original_target_id = match self.get_to_node_id(previous_node_id, current_osm_id) {
+                Some(id) => id,
+                None => return Ok(None),
+            };
+
+            let target_node = &self.builder.nodes[original_target_id as usize];
+            let is_clone = target_node.id != target_node.external_id as u32;
+            let is_last = i == osm_nodes.len() - 1;
+
+            let new_target_id = if !is_clone && !is_last {
+                let cost = *self
+                    .builder
+                    .temp_edges
+                    .get(&previous_node_id)
+                    .unwrap()
+                    .get(&original_target_id)
+                    .unwrap();
+                let cloned_id = self.make_node_clone(original_target_id)?;
+
+                self.edges_to_remove
+                    .insert((previous_node_id, original_target_id));
+                self.edges_to_add
+                    .entry(previous_node_id)
+                    .or_default()
+                    .insert(cloned_id, cost);
+
+                cloned_id
+            } else {
+                original_target_id
+            };
+
+            cloned_nodes.push(new_target_id);
+        }
+
+        Ok(Some(cloned_nodes))
+    }
+
+    fn plan_ensure_only_edge(&mut self, from_node_id: u32, to_node_id: u32) {
+        let original_from_id = *self.new_nodes.get(&from_node_id).unwrap_or(&from_node_id);
+
+        if let Some(original_edges) = self.builder.temp_edges.get(&original_from_id) {
+            for &target_id in original_edges.keys() {
+                if target_id != to_node_id {
+                    self.edges_to_remove.insert((from_node_id, target_id));
+                }
+            }
+        }
+    }
+
+    fn apply(self) -> Result<()> {
+        for (&new_id, &old_id) in &self.new_nodes {
+            if let Some(edges_to_clone) = self.builder.temp_edges.get(&old_id).cloned() {
+                self.builder.temp_edges.insert(new_id, edges_to_clone);
+            }
+        }
+
+        for (from, to) in self.edges_to_remove {
+            if let Some(edges) = self.builder.temp_edges.get_mut(&from) {
+                edges.remove(&to);
+            }
+        }
+
+        for (from, new_edges) in self.edges_to_add {
+            let edges = self.builder.temp_edges.entry(from).or_default();
+            edges.extend(new_edges);
+        }
+
+        Ok(())
+    }
 }
 
 impl<'a> GraphBuilder<'a> {
@@ -114,7 +253,6 @@ impl<'a> GraphBuilder<'a> {
             processed_ways: Vec::new(),
             phantom_node_counter: 0x0008_0000_0000_0000,
             way_node_map: FxHashMap::default(),
-            phantom_via_map: FxHashMap::default(),
         }
     }
 
@@ -141,7 +279,7 @@ impl<'a> GraphBuilder<'a> {
                     .push((way.id, valid_nodes.clone(), interned_tags));
                 self.way_node_map.insert(way.id, valid_nodes.clone());
                 for &osm_node_id in &valid_nodes {
-                    self.get_or_create_internal_node(osm_node_id, osm_node_id);
+                    self.get_or_create_internal_node(osm_node_id);
                 }
             }
         }
@@ -200,7 +338,7 @@ impl<'a> GraphBuilder<'a> {
         Ok(graph)
     }
 
-    fn get_or_create_internal_node(&mut self, osm_node_id: i64, external_id: i64) -> u32 {
+    fn get_or_create_internal_node(&mut self, osm_node_id: i64) -> u32 {
         if let Some(id) = self.node_map.get(&osm_node_id) {
             return *id;
         }
@@ -209,7 +347,7 @@ impl<'a> GraphBuilder<'a> {
         self.node_map.insert(osm_node_id, internal_id);
         self.next_internal_id += 1;
 
-        let raw_node = self.raw_nodes.get(&external_id).unwrap();
+        let raw_node = self.raw_nodes.get(&osm_node_id).unwrap();
         let interned_tags = raw_node
             .tags
             .iter()
@@ -218,7 +356,7 @@ impl<'a> GraphBuilder<'a> {
 
         self.nodes.push(RouteNode {
             id: internal_id,
-            external_id,
+            external_id: osm_node_id,
             lat: raw_node.lat as f32,
             lon: raw_node.lon as f32,
             tags: interned_tags,
@@ -315,105 +453,34 @@ impl<'a> GraphBuilder<'a> {
             ));
         }
 
-        let is_mandatory = restriction_type == TurnRestriction::Mandatory;
-        self.store_restriction(&nodes_path, is_mandatory)
-    }
+        let mut change = GraphChange::new(self);
 
-    fn store_restriction(&mut self, osm_nodes: &[i64], is_mandatory: bool) -> Result<()> {
-        if osm_nodes.len() < 2 {
-            return Err(GraphError::InvalidOsmData(
-                "Restriction path too short for storing".into(),
-            ));
-        }
-
-        let mut cloned_path_internal_ids: Vec<u32> = Vec::with_capacity(osm_nodes.len());
-        let mut previous_internal_id = *self.node_map.get(&osm_nodes[0]).ok_or_else(|| {
-            GraphError::InvalidOsmData("Restriction 'from' node not in graph".into())
-        })?;
-        cloned_path_internal_ids.push(previous_internal_id);
-
-        for (i, current_osm_id) in osm_nodes.iter().enumerate().skip(1) {
-            let (target_internal_id, edge_cost) = self
-            .temp_edges
-            .get(&previous_internal_id)
-            .and_then(|edges| {
-                edges.iter().find(|(&id, _)| self.nodes[id as usize].external_id == *current_osm_id)
-            })
-            .map(|(&id, &cost)| (id, cost))
-            .ok_or_else(|| {
-                GraphError::InvalidOsmData(format!(
-                    "Disjointed restriction: no edge from OSM node {} (internal {}) to OSM node {}",
-                    self.nodes[previous_internal_id as usize].external_id, previous_internal_id, current_osm_id
-                ))
-            })?;
-
-            let target_node = &self.nodes[target_internal_id as usize];
-            let target_is_phantom =
-                self.node_map.get(&target_node.external_id) != Some(&target_node.id);
-            let is_last_node_in_path = i == osm_nodes.len() - 1;
-
-            let new_node_id;
-            if !is_last_node_in_path && !target_is_phantom {
-                let from_for_key = *cloned_path_internal_ids.last().unwrap();
-                let via_for_key = target_node.external_id;
-
-                if let Some(existing_phantom_id) =
-                    self.phantom_via_map.get(&(from_for_key, via_for_key))
-                {
-                    new_node_id = *existing_phantom_id;
-                } else {
-                    let cloned_node_id = self.create_phantom_node(*current_osm_id)?;
-
-                    if let Some(original_edges) = self.temp_edges.get(&target_internal_id).cloned()
-                    {
-                        self.temp_edges.insert(cloned_node_id, original_edges);
-                    }
-
-                    self.phantom_via_map
-                        .insert((from_for_key, via_for_key), cloned_node_id);
-                    new_node_id = cloned_node_id;
-                }
-
-                let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
-                prev_edges.remove(&target_internal_id);
-                prev_edges.insert(new_node_id, edge_cost);
-            } else {
-                new_node_id = target_internal_id;
+        let cloned_nodes = match change.plan_restriction_path(&nodes_path)? {
+            Some(nodes) => nodes,
+            None => {
+                log::warn!(
+                    "Turn restriction {} refers to a non-existing route, skipping.",
+                    rel.id
+                );
+                return Ok(());
             }
+        };
 
-            cloned_path_internal_ids.push(new_node_id);
-            previous_internal_id = new_node_id;
-        }
-
-        if is_mandatory {
-            for i in 1..cloned_path_internal_ids.len() - 1 {
-                let via_node_id = cloned_path_internal_ids[i];
-                let mandated_target_id = cloned_path_internal_ids[i + 1];
-
-                if let Some(edges) = self.temp_edges.get_mut(&via_node_id) {
-                    edges.retain(|&target, _| target == mandated_target_id);
-                }
+        if restriction_type == TurnRestriction::Mandatory {
+            for i in 1..cloned_nodes.len() - 1 {
+                let from_node_id = cloned_nodes[i];
+                let to_node_id = cloned_nodes[i + 1];
+                change.plan_ensure_only_edge(from_node_id, to_node_id);
             }
         } else {
-            if cloned_path_internal_ids.len() >= 2 {
-                let from_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 2];
-                let to_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 1];
-
-                if let Some(edges) = self.temp_edges.get_mut(&from_id) {
-                    edges.remove(&to_id);
-                }
+            if cloned_nodes.len() >= 2 {
+                let from_id = cloned_nodes[cloned_nodes.len() - 2];
+                let to_id = cloned_nodes[cloned_nodes.len() - 1];
+                change.edges_to_remove.insert((from_id, to_id));
             }
         }
 
-        Ok(())
-    }
-
-    fn create_phantom_node(&mut self, original_node_id: i64) -> Result<u32> {
-        self.phantom_node_counter += 1;
-        let phantom_osm_id = self.phantom_node_counter;
-        let phantom_internal_id =
-            self.get_or_create_internal_node(phantom_osm_id, original_node_id);
-        Ok(phantom_internal_id)
+        change.apply()
     }
 
     fn get_way_penalty(&self, tags: &FxHashMap<u32, u32>) -> Option<f64> {
@@ -439,9 +506,8 @@ impl<'a> GraphBuilder<'a> {
         let mut has_specific_prohibition = false;
 
         for tag_id in self.profile.access_tags.iter() {
-            if let Some(val_id) = tags.get(tag_id) {
-                let val_id = Some(*val_id);
-
+            if let Some(val_id) = tags.get(tag_id).copied() {
+                let val_id = Some(val_id);
                 if val_id == yes_id || val_id == designated_id || val_id == permissive_id {
                     has_specific_permission = true;
                     break;
