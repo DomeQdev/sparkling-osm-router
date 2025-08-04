@@ -302,103 +302,24 @@ impl<'a> GraphBuilder<'a> {
             return Ok(());
         }
 
-        if restriction_type == TurnRestriction::Mandatory {
-            let from_member = rel
-                .members
-                .iter()
-                .find(|m| m.role == "from")
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData("Mandatory restriction has no 'from' member".into())
-                })?;
-            let via_member_node_id = rel
-                .members
-                .iter()
-                .find(|m| m.role == "via" && m.member_type == "node")
-                .map(|m| m.ref_id)
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData(
-                        "Mandatory restriction needs a single 'via' node".into(),
-                    )
-                })?;
-            let to_member = rel.members.iter().find(|m| m.role == "to").ok_or_else(|| {
-                GraphError::InvalidOsmData("Mandatory restriction has no 'to' member".into())
-            })?;
-
-            let via_internal_id = *self.node_map.get(&via_member_node_id).ok_or_else(|| {
-                GraphError::InvalidOsmData("Via node for mandatory restriction not in graph".into())
-            })?;
-
-            let all_outgoing_edges = match self.temp_edges.get(&via_internal_id) {
-                Some(edges) => edges.clone(),
-                None => return Ok(()),
-            };
-
-            let from_way_nodes = self.restriction_member_to_nodes(rel, from_member)?;
-            let to_way_nodes = self.restriction_member_to_nodes(rel, to_member)?;
-
-            let from_node_before_via = from_way_nodes
-                .iter()
-                .rev()
-                .find(|&&n| n != via_member_node_id)
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData(
-                        "'from' way in mandatory restriction is too short".into(),
-                    )
-                })?;
-
-            let to_node_after_via = to_way_nodes
-                .iter()
-                .find(|&&n| n != via_member_node_id)
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData(
-                        "'to' way in mandatory restriction is too short".into(),
-                    )
-                })?;
-
-            for (outgoing_node_id, _) in all_outgoing_edges.iter() {
-                let outgoing_node_external_id = self.nodes[*outgoing_node_id as usize].external_id;
-
-                if outgoing_node_external_id == *to_node_after_via
-                    || outgoing_node_external_id == *from_node_before_via
-                {
-                    continue;
-                }
-
-                let synthetic_prohibitory_path = vec![
-                    *from_node_before_via,
-                    via_member_node_id,
-                    outgoing_node_external_id,
-                ];
-
-                if let Err(e) = self.store_restriction(&synthetic_prohibitory_path) {
-                    log::warn!(
-                        "Could not apply synthetic prohibitory restriction for mandatory rel {}: {}",
-                        rel.id,
-                        e.to_string()
-                    );
-                }
-            }
-
-            Ok(())
-        } else {
-            let members = self.get_ordered_restriction_members(rel)?;
-            let mut member_nodes: Vec<Vec<i64>> = Vec::new();
-            for m in members {
-                member_nodes.push(self.restriction_member_to_nodes(rel, m)?);
-            }
-            let nodes_path = self.flatten_restriction_nodes(rel, member_nodes)?;
-
-            if nodes_path.len() < 2 {
-                return Err(GraphError::InvalidOsmData(
-                    "Restriction path too short".into(),
-                ));
-            }
-
-            self.store_restriction(&nodes_path)
+        let mut member_nodes: Vec<Vec<i64>> = Vec::new();
+        for m in self.get_ordered_restriction_members(rel)? {
+            member_nodes.push(self.restriction_member_to_nodes(rel, m)?);
         }
+
+        let nodes_path = self.flatten_restriction_nodes(rel, member_nodes)?;
+
+        if nodes_path.len() < 2 {
+            return Err(GraphError::InvalidOsmData(
+                "Restriction path too short".into(),
+            ));
+        }
+
+        let is_mandatory = restriction_type == TurnRestriction::Mandatory;
+        self.store_restriction(&nodes_path, is_mandatory)
     }
 
-    fn store_restriction(&mut self, osm_nodes: &[i64]) -> Result<()> {
+    fn store_restriction(&mut self, osm_nodes: &[i64], is_mandatory: bool) -> Result<()> {
         if osm_nodes.len() < 2 {
             return Err(GraphError::InvalidOsmData(
                 "Restriction path too short for storing".into(),
@@ -412,25 +333,24 @@ impl<'a> GraphBuilder<'a> {
         cloned_path_internal_ids.push(previous_internal_id);
 
         for (i, current_osm_id) in osm_nodes.iter().enumerate().skip(1) {
-            let is_last_node_in_path = i == osm_nodes.len() - 1;
-
             let (target_internal_id, edge_cost) = self
-                .temp_edges
-                .get(&previous_internal_id)
-                .and_then(|edges| {
-                    edges.iter().find(|(&id, _)| self.nodes[id as usize].external_id == *current_osm_id)
-                })
-                .map(|(&id, &cost)| (id, cost))
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData(format!(
-                        "Disjointed restriction: no edge from OSM node {} (internal {}) to OSM node {}",
-                        self.nodes[previous_internal_id as usize].external_id, previous_internal_id, current_osm_id
-                    ))
-                })?;
+            .temp_edges
+            .get(&previous_internal_id)
+            .and_then(|edges| {
+                edges.iter().find(|(&id, _)| self.nodes[id as usize].external_id == *current_osm_id)
+            })
+            .map(|(&id, &cost)| (id, cost))
+            .ok_or_else(|| {
+                GraphError::InvalidOsmData(format!(
+                    "Disjointed restriction: no edge from OSM node {} (internal {}) to OSM node {}",
+                    self.nodes[previous_internal_id as usize].external_id, previous_internal_id, current_osm_id
+                ))
+            })?;
 
             let target_node = &self.nodes[target_internal_id as usize];
             let target_is_phantom =
                 self.node_map.get(&target_node.external_id) != Some(&target_node.id);
+            let is_last_node_in_path = i == osm_nodes.len() - 1;
 
             let new_node_id;
             if !is_last_node_in_path && !target_is_phantom {
@@ -441,12 +361,6 @@ impl<'a> GraphBuilder<'a> {
                     self.phantom_via_map.get(&(from_for_key, via_for_key))
                 {
                     new_node_id = *existing_phantom_id;
-
-                    let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
-                    if prev_edges.contains_key(&target_internal_id) {
-                        prev_edges.remove(&target_internal_id);
-                        prev_edges.insert(new_node_id, edge_cost);
-                    }
                 } else {
                     let cloned_node_id = self.create_phantom_node(*current_osm_id)?;
 
@@ -455,14 +369,14 @@ impl<'a> GraphBuilder<'a> {
                         self.temp_edges.insert(cloned_node_id, original_edges);
                     }
 
-                    let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
-                    prev_edges.remove(&target_internal_id);
-                    prev_edges.insert(cloned_node_id, edge_cost);
-
                     self.phantom_via_map
                         .insert((from_for_key, via_for_key), cloned_node_id);
                     new_node_id = cloned_node_id;
                 }
+
+                let prev_edges = self.temp_edges.get_mut(&previous_internal_id).unwrap();
+                prev_edges.remove(&target_internal_id);
+                prev_edges.insert(new_node_id, edge_cost);
             } else {
                 new_node_id = target_internal_id;
             }
@@ -471,12 +385,23 @@ impl<'a> GraphBuilder<'a> {
             previous_internal_id = new_node_id;
         }
 
-        if cloned_path_internal_ids.len() >= 2 {
-            let from_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 2];
-            let to_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 1];
+        if is_mandatory {
+            for i in 1..cloned_path_internal_ids.len() - 1 {
+                let via_node_id = cloned_path_internal_ids[i];
+                let mandated_target_id = cloned_path_internal_ids[i + 1];
 
-            if let Some(edges) = self.temp_edges.get_mut(&from_id) {
-                edges.remove(&to_id);
+                if let Some(edges) = self.temp_edges.get_mut(&via_node_id) {
+                    edges.retain(|&target, _| target == mandated_target_id);
+                }
+            }
+        } else {
+            if cloned_path_internal_ids.len() >= 2 {
+                let from_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 2];
+                let to_id = cloned_path_internal_ids[cloned_path_internal_ids.len() - 1];
+
+                if let Some(edges) = self.temp_edges.get_mut(&from_id) {
+                    edges.remove(&to_id);
+                }
             }
         }
 
@@ -502,20 +427,40 @@ impl<'a> GraphBuilder<'a> {
     }
 
     fn is_way_accessible(&self, tags: &FxHashMap<u32, u32>) -> bool {
-        let no_id = self.interner.map.get("no");
-        let private_id = self.interner.map.get("private");
-        let false_id = self.interner.map.get("false");
+        let yes_id = self.interner.map.get("yes").copied();
+        let designated_id = self.interner.map.get("designated").copied();
+        let permissive_id = self.interner.map.get("permissive").copied();
+
+        let no_id = self.interner.map.get("no").copied();
+        let private_id = self.interner.map.get("private").copied();
+        let false_id = self.interner.map.get("false").copied();
+
+        let mut has_specific_permission = false;
+        let mut has_specific_prohibition = false;
 
         for tag_id in self.profile.access_tags.iter() {
             if let Some(val_id) = tags.get(tag_id) {
-                if Some(*val_id) == no_id.copied()
-                    || Some(*val_id) == private_id.copied()
-                    || Some(*val_id) == false_id.copied()
-                {
-                    return false;
+                let val_id = Some(*val_id);
+
+                if val_id == yes_id || val_id == designated_id || val_id == permissive_id {
+                    has_specific_permission = true;
+                    break;
+                }
+
+                if val_id == no_id || val_id == private_id || val_id == false_id {
+                    has_specific_prohibition = true;
                 }
             }
         }
+
+        if has_specific_permission {
+            return true;
+        }
+
+        if has_specific_prohibition {
+            return false;
+        }
+
         true
     }
 
