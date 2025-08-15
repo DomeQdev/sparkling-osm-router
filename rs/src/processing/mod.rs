@@ -102,23 +102,6 @@ impl<'a, 'b> GraphChange<'a, 'b> {
         Ok(cloned_internal_id)
     }
 
-    fn get_to_node_id(&self, from_node_id: u32, to_osm_id: i64) -> Option<u32> {
-        let original_from_id = *self.new_nodes.get(&from_node_id).unwrap_or(&from_node_id);
-
-        self.builder
-            .temp_edges
-            .get(&original_from_id)
-            .and_then(|edges| {
-                edges
-                    .keys()
-                    .find(|&&id| {
-                        let target_node = &self.builder.nodes[id as usize];
-                        target_node.external_id == to_osm_id
-                    })
-                    .copied()
-            })
-    }
-
     fn plan_restriction_path(&mut self, osm_nodes: &[i64]) -> Result<Option<Vec<u32>>> {
         if osm_nodes.len() < 2 {
             return Ok(None);
@@ -134,43 +117,54 @@ impl<'a, 'b> GraphChange<'a, 'b> {
             let previous_node_id = *cloned_nodes.last().unwrap();
             let current_osm_id = osm_nodes[i];
 
-            let original_target_id = match self.get_to_node_id(previous_node_id, current_osm_id) {
-                Some(id) => id,
-                None => return Ok(None),
-            };
+            let original_previous_id = *self
+                .new_nodes
+                .get(&previous_node_id)
+                .unwrap_or(&previous_node_id);
+            let neighbors = self.builder.temp_edges.get(&original_previous_id);
 
-            let target_node = &self.builder.nodes[original_target_id as usize];
+            if neighbors.is_none() {
+                return Ok(None);
+            }
+            let neighbors = neighbors.unwrap();
 
-            let is_clone =
-                self.builder.node_map.get(&target_node.external_id) != Some(&target_node.id);
-            let is_last = i == osm_nodes.len() - 1;
+            let existing_clone_target = neighbors.keys().find(|&&neighbor_id| {
+                let neighbor_node = &self.builder.nodes[neighbor_id as usize];
+                let is_clone = self.builder.node_map.get(&neighbor_node.external_id)
+                    != Some(&neighbor_node.id);
+                neighbor_node.external_id == current_osm_id && is_clone
+            });
 
-            let new_target_id = if !is_clone && !is_last {
-                let original_previous_id = *self
-                    .new_nodes
-                    .get(&previous_node_id)
-                    .unwrap_or(&previous_node_id);
-                let cost = *self
-                    .builder
-                    .temp_edges
-                    .get(&original_previous_id)
-                    .and_then(|edges| edges.get(&original_target_id))
-                    .ok_or_else(|| {
-                        GraphError::InvalidOsmData("Cost for restriction edge not found.".into())
-                    })?;
-
-                let cloned_id = self.make_node_clone(original_target_id)?;
-
-                self.edges_to_remove
-                    .insert((previous_node_id, original_target_id));
-                self.edges_to_add
-                    .entry(previous_node_id)
-                    .or_default()
-                    .insert(cloned_id, cost);
-
-                cloned_id
+            let new_target_id = if let Some(&clone_id) = existing_clone_target {
+                clone_id
             } else {
-                original_target_id
+                let original_target_id = neighbors.keys().find(|&&id| {
+                    let target_node = &self.builder.nodes[id as usize];
+                    target_node.external_id == current_osm_id
+                });
+
+                if original_target_id.is_none() {
+                    return Ok(None);
+                }
+                let original_target_id = *original_target_id.unwrap();
+
+                let is_last = i == osm_nodes.len() - 1;
+
+                if !is_last {
+                    let cost = *neighbors.get(&original_target_id).unwrap();
+                    let cloned_id = self.make_node_clone(original_target_id)?;
+
+                    self.edges_to_remove
+                        .insert((previous_node_id, original_target_id));
+                    self.edges_to_add
+                        .entry(previous_node_id)
+                        .or_default()
+                        .insert(cloned_id, cost);
+
+                    cloned_id
+                } else {
+                    original_target_id
+                }
             };
 
             cloned_nodes.push(new_target_id);

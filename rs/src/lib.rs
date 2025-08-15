@@ -455,11 +455,16 @@ fn enqueue_route(mut cx: FunctionContext) -> JsResult<JsString> {
     let queue_id = cx.argument::<JsNumber>(0)?.value(&mut cx) as i32;
     let route_id = cx.argument::<JsString>(1)?.value(&mut cx);
     let waypoints_js = cx.argument::<JsArray>(2)?;
-    let waypoints: Vec<i64> = waypoints_js
-        .to_vec(&mut cx)?
-        .into_iter()
-        .map(|v| v.downcast::<JsNumber, _>(&mut cx).unwrap().value(&mut cx) as i64)
-        .collect();
+
+    let js_vec = waypoints_js.to_vec(&mut cx)?;
+    let mut waypoints = Vec::with_capacity(js_vec.len());
+
+    for (i, v) in js_vec.iter().enumerate() {
+        let num = v.downcast::<JsNumber, _>(&mut cx).or_else(|_| {
+            cx.throw_error(format!("Waypoint at index {} is not a valid number", i))
+        })?;
+        waypoints.push(num.value(&mut cx) as i64);
+    }
 
     let queue = match ROUTE_QUEUES.lock().unwrap().get(&queue_id) {
         Some(q) => q.clone(),
