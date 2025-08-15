@@ -6,15 +6,14 @@ function processPointSegment(
     offsetMeters: number
 ): Location[] {
     const offsetDeg = offsetMeters / ((6371000 * Math.PI) / 180.0);
-
-    const result: Location[] = [];
-
     const avgLatRad = (((lat1 + lat2) / 2.0) * Math.PI) / 180.0;
     const lonFactor = Math.cos(avgLatRad);
 
     const dx = (lon2 - lon1) * lonFactor;
     const dy = lat2 - lat1;
     const l = Math.sqrt(dx * dx + dy * dy);
+
+    const result: Location[] = [];
 
     if (l < 1e-10) {
         result.push([lon1, lat1]);
@@ -55,14 +54,11 @@ function findIntersection(
 }
 
 export default (points: Location[], offsetMeters: number = 1.5): Location[] => {
-    if (points.length < 2) {
-        return [];
-    }
+    if (points.length < 2) return [];
 
-    const pointsCount = points.length;
     const segments: Location[][] = [];
 
-    for (let i = 0; i < pointsCount - 1; i++) {
+    for (let i = 0; i < points.length - 1; i++) {
         segments.push(processPointSegment(points[i], points[i + 1], offsetMeters));
     }
 
@@ -75,14 +71,33 @@ export default (points: Location[], offsetMeters: number = 1.5): Location[] => {
         const currentSeg = segments[i];
         const nextSeg = segments[i + 1];
 
-        const intersection = findIntersection(currentSeg[0], currentSeg[1], nextSeg[0], nextSeg[1]);
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const p3 = points[i + 2];
 
-        if (intersection) {
-            result.push(intersection);
-        } else {
-            result.push(currentSeg[1]);
-            result.push(nextSeg[0]);
+        const v1 = [p2[0] - p1[0], p2[1] - p1[1]];
+        const v2 = [p3[0] - p2[0], p3[1] - p2[1]];
+
+        const dotProduct = v1[0] * v2[0] + v1[1] * v2[1];
+
+        const mag1 = Math.sqrt(v1[0] * v1[0] + v1[1] * v1[1]);
+        const mag2 = Math.sqrt(v2[0] * v2[0] + v2[1] * v2[1]);
+
+        if (mag1 > 0 && mag2 > 0) {
+            const normalizedDot = dotProduct / (mag1 * mag2);
+            if (normalizedDot >= -0.99) {
+                const intersection = findIntersection(currentSeg[0], currentSeg[1], nextSeg[0], nextSeg[1]);
+
+                if (intersection) {
+                    result.push(intersection);
+
+                    continue;
+                }
+            }
         }
+
+        result.push(currentSeg[1]);
+        result.push(nextSeg[0]);
     }
 
     const lastSegment = segments[segments.length - 1];
