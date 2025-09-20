@@ -74,7 +74,7 @@ class Graph {
 
         return {
             query,
-            server: overpassOptions.server || "https://overpass.private.coffee",
+            server: overpassOptions.server || "https://overpass-api.de",
             retries: overpassOptions.retries || 3,
             retry_delay: overpassOptions.retryDelay || 1000,
         };
