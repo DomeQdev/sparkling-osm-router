@@ -85,10 +85,18 @@ pub struct OverpassOptions {
     pub retry_delay: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Hash, PartialEq, Eq)]
+pub struct ProtobufOptions {
+    pub url: String,
+    pub retries: u32,
+    pub retry_delay: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LoadOptions {
     pub file_path: String,
     pub ttl_days: u64,
     pub profiles: Vec<Profile>,
     pub overpass: Option<OverpassOptions>,
+    pub protobuf: Option<ProtobufOptions>,
 }

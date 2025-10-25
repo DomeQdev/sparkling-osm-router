@@ -4,19 +4,29 @@ import { Location, RawProfile } from "../typings";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 
+type OverpassGraphOptions = {
+    query: string[];
+    bounds: Location[];
+    server?: string;
+    timeout?: number;
+    retries?: number;
+    retryDelay?: number;
+};
+
+type ProtobufGraphOptions = {
+    url: string;
+    timeout?: number;
+    retries?: number;
+    retryDelay?: number;
+};
+
 export type GraphOptions = {
     filePath: string;
     ttlDays: number;
-    overpassGraph: {
-        query: string[];
-        bounds: Location[];
-        server?: string;
-        timeout?: number;
-        retries?: number;
-        retryDelay?: number;
-        ignoreTurnRestrictions?: boolean;
-    };
-};
+} & (
+    | { overpassGraph: OverpassGraphOptions; protobufGraph?: never }
+    | { protobufGraph: ProtobufGraphOptions; overpassGraph?: never }
+);
 
 class Graph {
     public graphId: number | null = null;
@@ -51,6 +61,7 @@ class Graph {
                 ttl_days: this.options.ttlDays,
                 profiles: this.profiles,
                 overpass: this.overpassConfig,
+                protobuf: this.protobufConfig,
             })
         ));
     };
@@ -61,7 +72,20 @@ class Graph {
         return unloadGraph(this.graphId);
     };
 
+    private get protobufConfig() {
+        if (!this.options.protobufGraph) return undefined;
+        const protoOptions = this.options.protobufGraph;
+
+        return {
+            url: protoOptions.url,
+            retries: protoOptions.retries || 3,
+            retry_delay: protoOptions.retryDelay || 1000,
+        };
+    }
+
     private get overpassConfig() {
+        if (!this.options.overpassGraph) return undefined;
+
         const overpassOptions = this.options.overpassGraph;
         const bounds = overpassOptions.bounds
             .map(([lon, lat]) => `${lat.toFixed(5)} ${lon.toFixed(5)}`)
@@ -69,7 +93,7 @@ class Graph {
 
         const query = `[out:xml][timeout:${overpassOptions.timeout || 1e4}];
         (${overpassOptions.query.map((query) => `${query}(poly: "${bounds}");`).join("\n")});
-        ${!overpassOptions.ignoreTurnRestrictions ? ">->.n; <->.r; (._;.n;.r;);" : "(._;>;);"}
+        ">->.n; <->.r; (._;.n;.r;);
         out;`;
 
         return {

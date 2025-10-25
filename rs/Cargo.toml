@@ -21,5 +21,7 @@ rayon = "1.8"
 num_cpus = "1.16"
 rstar = "0.12"
 rustc-hash = "2.1.1"
-reqwest = { version = "0.11", features = ["blocking", "json"] }
+reqwest = { version = "0.11.27", features = ["blocking", "json"] }
 xml-rs = "0.8"
+osmpbf = "0.3"
+bytes = "1"

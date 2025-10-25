@@ -21,13 +21,13 @@ impl GraphContainer {
 }
 
 pub fn distance(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
-    let r = 6371.0;
-    let lat1_rad = lat1.to_radians();
-    let lat2_rad = lat2.to_radians();
-    let dlon_rad = (lon2 - lon1).to_radians();
+    let lat1_cos = lat1.to_radians().cos();
+    let lat2_cos = lat2.to_radians().cos();
 
-    let x = dlon_rad * ((lat1_rad + lat2_rad) / 2.0).cos();
-    let dlat_rad = lat2_rad - lat1_rad;
+    let d_lat_half_sin = ((lat2 - lat1).to_radians() / 2.0).sin();
+    let d_lon_half_sin = ((lon2 - lon1).to_radians() / 2.0).sin();
 
-    r * (x.powi(2) + dlat_rad.powi(2)).sqrt()
+    let a = d_lat_half_sin * d_lat_half_sin + lat1_cos * lat2_cos * d_lon_half_sin * d_lon_half_sin;
+
+    12742.0 * a.sqrt().asin()
 }

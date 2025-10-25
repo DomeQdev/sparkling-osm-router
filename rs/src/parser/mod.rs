@@ -1,6 +1,9 @@
 use crate::core::errors::{GraphError, Result};
-use crate::core::types::{Node, Relation, RelationMember, Way};
+use crate::core::types::{Node, ProtobufOptions, Relation, RelationMember, Way};
+use bytes::Bytes; // <-- NOWY IMPORT
+use osmpbf::{Element, ElementReader};
 use std::collections::HashMap;
+use std::io::Cursor; // <-- NOWY IMPORT
 use xml::attribute::OwnedAttribute;
 use xml::reader::{EventReader, XmlEvent};
 
@@ -34,6 +37,131 @@ pub fn fetch_from_overpass(
         "Failed after {} retries",
         retries
     )))
+}
+
+pub fn fetch_pbf_to_memory(options: &ProtobufOptions) -> Result<Bytes> {
+    let client = reqwest::blocking::Client::new();
+    let mut attempts = 0;
+
+    while attempts < options.retries {
+        let response = client
+            .get(&options.url)
+            .send()
+            .map_err(|e| GraphError::DownloadError(e.to_string()))?;
+
+        if response.status().is_success() {
+            return response
+                .bytes()
+                .map_err(|e| GraphError::DownloadError(e.to_string()));
+        }
+
+        attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(options.retry_delay));
+    }
+
+    Err(GraphError::DownloadError(format!(
+        "Failed to download PBF from {} after {} retries",
+        options.url, options.retries
+    )))
+}
+
+pub fn parse_osm_pbf(
+    pbf_data: &[u8],
+) -> Result<(
+    HashMap<i64, Node>,
+    HashMap<i64, Way>,
+    HashMap<i64, Relation>,
+)> {
+    let cursor = Cursor::new(pbf_data);
+    let reader = ElementReader::new(cursor);
+
+    let (nodes, ways, relations) = reader.par_map_reduce(
+        |element| {
+            let mut thread_nodes = HashMap::new();
+            let mut thread_ways = HashMap::new();
+            let mut thread_relations = HashMap::new();
+
+            match element {
+                Element::Node(n) => {
+                    thread_nodes.insert(
+                        n.id(),
+                        Node {
+                            id: n.id(),
+                            lat: n.lat(),
+                            lon: n.lon(),
+                            tags: n
+                                .tags()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect(),
+                        },
+                    );
+                }
+                Element::DenseNode(n) => {
+                    thread_nodes.insert(
+                        n.id(),
+                        Node {
+                            id: n.id(),
+                            lat: n.lat(),
+                            lon: n.lon(),
+                            tags: n
+                                .tags()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect(),
+                        },
+                    );
+                }
+                Element::Way(w) => {
+                    thread_ways.insert(
+                        w.id(),
+                        Way {
+                            id: w.id(),
+                            node_refs: w.refs().collect(),
+                            tags: w
+                                .tags()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect(),
+                        },
+                    );
+                }
+                Element::Relation(r) => {
+                    thread_relations.insert(
+                        r.id(),
+                        Relation {
+                            id: r.id(),
+                            members: r
+                                .members()
+                                .map(|m| RelationMember {
+                                    member_type: match m.member_type {
+                                        osmpbf::RelMemberType::Node => "node".to_string(),
+                                        osmpbf::RelMemberType::Way => "way".to_string(),
+                                        osmpbf::RelMemberType::Relation => {
+                                            "relation".to_string()
+                                        }
+                                    },
+                                    ref_id: m.member_id,
+                                    role: m.role().unwrap_or("").to_string(),
+                                })
+                                .collect(),
+                            tags: r
+                                .tags()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect(),
+                        },
+                    );
+                }
+            }
+            (thread_nodes, thread_ways, thread_relations)
+        },
+        || (HashMap::new(), HashMap::new(), HashMap::new()),
+        |mut a, b| {
+            a.0.extend(b.0);
+            a.1.extend(b.1);
+            a.2.extend(b.2);
+            a
+        },
+    )?;
+
+    Ok((nodes, ways, relations))
 }
 
 pub fn parse_osm_xml(

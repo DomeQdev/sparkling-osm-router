@@ -8,7 +8,7 @@ mod routing;
 use crate::core::errors::{GraphError, Result};
 use crate::core::types::LoadOptions;
 use crate::graph::GraphContainer;
-use crate::parser::{fetch_from_overpass, parse_osm_xml};
+use crate::parser::{fetch_from_overpass, fetch_pbf_to_memory, parse_osm_pbf, parse_osm_xml};
 use crate::processing::GraphBuilder;
 use crate::queue::{RouteQueue, RouteRequest};
 use lazy_static::lazy_static;
@@ -61,18 +61,25 @@ fn load_or_build_graph_sync(options: LoadOptions) -> Result<GraphContainer> {
         }
     }
 
-    let xml_data = if let Some(overpass_opts) = options.overpass {
-        fetch_from_overpass(
+    let (raw_nodes, raw_ways, raw_relations) = if let Some(proto_opts) = &options.protobuf {
+        let pbf_data = fetch_pbf_to_memory(proto_opts)?;
+        parse_osm_pbf(&pbf_data)?
+    } else if let Some(overpass_opts) = &options.overpass {
+        let xml_data = fetch_from_overpass(
             &overpass_opts.query,
             &overpass_opts.server,
             overpass_opts.retries,
             overpass_opts.retry_delay,
-        )?
+        )?;
+
+        parse_osm_xml(&xml_data)?
     } else {
-        fs::read_to_string(path).map_err(GraphError::FileIO)?
+        return Err(GraphError::FileIO(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No data source (protobuf, overpass) provided.",
+        )));
     };
 
-    let (raw_nodes, raw_ways, raw_relations) = parse_osm_xml(&xml_data)?;
     let processed_profiles: Vec<_> = options
         .profiles
         .par_iter()

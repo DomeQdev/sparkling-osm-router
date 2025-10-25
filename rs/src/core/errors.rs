@@ -8,6 +8,10 @@ pub enum GraphError {
     FileIO(#[from] IoError),
     #[error("XML Parsing Error: {0}")]
     XmlParsing(#[from] XmlError),
+    #[error("PBF Parsing Error: {0}")]
+    PbfParsing(#[from] osmpbf::Error),
+    #[error("Download Error: {0}")]
+    DownloadError(String),
     #[error("JSON Deserialization Error: {0}")]
     JsonError(#[from] serde_json::Error),
     #[error("Overpass API Error: {0}")]
