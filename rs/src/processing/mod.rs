@@ -2,7 +2,7 @@ use crate::core::errors::{GraphError, Result};
 use crate::core::types::{Node, Profile, Relation, RelationMember, Way};
 use crate::graph::{ProcessedGraph, RouteNode, WayInfo};
 use crate::routing::distance;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -62,6 +62,149 @@ pub struct GraphBuilder<'a> {
 
     phantom_node_counter: i64,
     way_node_map: FxHashMap<i64, Vec<i64>>,
+}
+
+struct GraphChange<'a, 'b> {
+    builder: &'a mut GraphBuilder<'b>,
+    new_nodes: FxHashMap<u32, u32>,
+    edges_to_add: FxHashMap<u32, FxHashMap<u32, u16>>,
+    edges_to_remove: FxHashSet<(u32, u32)>,
+}
+
+impl<'a, 'b> GraphChange<'a, 'b> {
+    fn new(builder: &'a mut GraphBuilder<'b>) -> Self {
+        Self {
+            builder,
+            new_nodes: FxHashMap::default(),
+            edges_to_add: FxHashMap::default(),
+            edges_to_remove: FxHashSet::default(),
+        }
+    }
+
+    fn make_node_clone(&mut self, original_node_id: u32) -> Result<u32> {
+        self.builder.phantom_node_counter += 1;
+
+        let original_node = &self.builder.nodes[original_node_id as usize];
+
+        let cloned_internal_id = self.builder.next_internal_id;
+        self.builder.next_internal_id += 1;
+
+        self.builder.nodes.push(RouteNode {
+            id: cloned_internal_id,
+            external_id: original_node.external_id,
+            lat: original_node.lat,
+            lon: original_node.lon,
+            tags: original_node.tags.clone(),
+        });
+
+        self.new_nodes.insert(cloned_internal_id, original_node_id);
+
+        Ok(cloned_internal_id)
+    }
+
+    fn plan_restriction_path(&mut self, osm_nodes: &[i64]) -> Result<Option<Vec<u32>>> {
+        if osm_nodes.len() < 2 {
+            return Ok(None);
+        }
+
+        let first_node_id =
+            *self.builder.node_map.get(&osm_nodes[0]).ok_or_else(|| {
+                GraphError::InvalidOsmData("Restriction start node not found".into())
+            })?;
+        let mut cloned_nodes: Vec<u32> = vec![first_node_id];
+
+        for i in 1..osm_nodes.len() {
+            let previous_node_id = *cloned_nodes.last().unwrap();
+            let current_osm_id = osm_nodes[i];
+
+            let original_previous_id = *self
+                .new_nodes
+                .get(&previous_node_id)
+                .unwrap_or(&previous_node_id);
+            let neighbors = self.builder.temp_edges.get(&original_previous_id);
+
+            if neighbors.is_none() {
+                return Ok(None);
+            }
+            let neighbors = neighbors.unwrap();
+
+            let existing_clone_target = neighbors.keys().find(|&&neighbor_id| {
+                let neighbor_node = &self.builder.nodes[neighbor_id as usize];
+                let is_clone = self.builder.node_map.get(&neighbor_node.external_id)
+                    != Some(&neighbor_node.id);
+                neighbor_node.external_id == current_osm_id && is_clone
+            });
+
+            let new_target_id = if let Some(&clone_id) = existing_clone_target {
+                clone_id
+            } else {
+                let original_target_id = neighbors.keys().find(|&&id| {
+                    let target_node = &self.builder.nodes[id as usize];
+                    target_node.external_id == current_osm_id
+                });
+
+                if original_target_id.is_none() {
+                    return Ok(None);
+                }
+                let original_target_id = *original_target_id.unwrap();
+
+                let is_last = i == osm_nodes.len() - 1;
+
+                if !is_last {
+                    let cost = *neighbors.get(&original_target_id).unwrap();
+                    let cloned_id = self.make_node_clone(original_target_id)?;
+
+                    self.edges_to_remove
+                        .insert((previous_node_id, original_target_id));
+                    self.edges_to_add
+                        .entry(previous_node_id)
+                        .or_default()
+                        .insert(cloned_id, cost);
+
+                    cloned_id
+                } else {
+                    original_target_id
+                }
+            };
+
+            cloned_nodes.push(new_target_id);
+        }
+
+        Ok(Some(cloned_nodes))
+    }
+
+    fn plan_ensure_only_edge(&mut self, from_node_id: u32, to_node_id: u32) {
+        let original_from_id = *self.new_nodes.get(&from_node_id).unwrap_or(&from_node_id);
+
+        if let Some(original_edges) = self.builder.temp_edges.get(&original_from_id) {
+            for &target_id in original_edges.keys() {
+                if target_id != to_node_id {
+                    self.edges_to_remove.insert((from_node_id, target_id));
+                }
+            }
+        }
+    }
+
+    fn apply(self) -> Result<()> {
+        for (&new_id, &old_id) in &self.new_nodes {
+            if let Some(edges_to_clone) = self.builder.temp_edges.get(&old_id).cloned() {
+                self.builder.temp_edges.insert(new_id, edges_to_clone);
+            }
+        }
+
+        for (from, to) in self.edges_to_remove {
+            if let Some(edges) = self.builder.temp_edges.get_mut(&from) {
+                edges.remove(&to);
+            }
+        }
+
+        for (from, new_edges) in self.edges_to_add {
+            let edges = self.builder.temp_edges.entry(from).or_default();
+            edges.extend(new_edges);
+        }
+
+        Ok(())
+    }
 }
 
 impl<'a> GraphBuilder<'a> {
@@ -228,24 +371,6 @@ impl<'a> GraphBuilder<'a> {
         internal_id
     }
 
-    fn make_node_clone(&mut self, original_node_id: u32) -> Result<u32> {
-        self.phantom_node_counter += 1;
-        let original_node = &self.nodes[original_node_id as usize];
-
-        let cloned_internal_id = self.next_internal_id;
-        self.next_internal_id += 1;
-
-        self.nodes.push(RouteNode {
-            id: cloned_internal_id,
-            external_id: original_node.external_id,
-            lat: original_node.lat,
-            lon: original_node.lon,
-            tags: original_node.tags.clone(),
-        });
-
-        Ok(cloned_internal_id)
-    }
-
     fn is_way_usable(&mut self, way: &Way) -> bool {
         let interned_tags: FxHashMap<u32, u32> = way
             .tags
@@ -321,11 +446,10 @@ impl<'a> GraphBuilder<'a> {
             return Ok(());
         }
 
-        let member_nodes: Vec<Vec<i64>> = self
-            .get_ordered_restriction_members(rel)?
-            .into_iter()
-            .map(|m| self.restriction_member_to_nodes(rel, m))
-            .collect::<Result<_>>()?;
+        let mut member_nodes: Vec<Vec<i64>> = Vec::new();
+        for m in self.get_ordered_restriction_members(rel)? {
+            member_nodes.push(self.restriction_member_to_nodes(rel, m)?);
+        }
 
         let nodes_path = self.flatten_restriction_nodes(rel, member_nodes)?;
 
@@ -335,106 +459,34 @@ impl<'a> GraphBuilder<'a> {
             ));
         }
 
-        let mut original_path = Vec::with_capacity(nodes_path.len());
-        let mut cloned_path = Vec::with_capacity(nodes_path.len());
+        let mut change = GraphChange::new(self);
 
-        for (i, &osm_id) in nodes_path.iter().enumerate() {
-            let original_id = *self.node_map.get(&osm_id).ok_or_else(|| {
-                GraphError::InvalidOsmData(format!("Node {} from restriction not in graph", osm_id))
-            })?;
-            original_path.push(original_id);
-
-            if i > 0 && i < nodes_path.len() - 1 {
-                cloned_path.push(self.make_node_clone(original_id)?);
-            } else {
-                cloned_path.push(original_id);
+        let cloned_nodes = match change.plan_restriction_path(&nodes_path)? {
+            Some(nodes) => nodes,
+            None => {
+                log::warn!(
+                    "Turn restriction {} refers to a non-existing route, skipping.",
+                    rel.id
+                );
+                return Ok(());
             }
-        }
+        };
 
-        let from_node_id = original_path[0];
-        let original_via_id = original_path[1];
-        let cloned_via_id = cloned_path[1];
-
-        if let Some(cost) = self
-            .temp_edges
-            .get(&from_node_id)
-            .and_then(|edges| edges.get(&original_via_id).copied())
-        {
-            if let Some(edges) = self.temp_edges.get_mut(&from_node_id) {
-                edges.remove(&original_via_id);
-                edges.insert(cloned_via_id, cost);
+        if restriction_type == TurnRestriction::Mandatory {
+            for i in 1..cloned_nodes.len() - 1 {
+                let from_node_id = cloned_nodes[i];
+                let to_node_id = cloned_nodes[i + 1];
+                change.plan_ensure_only_edge(from_node_id, to_node_id);
             }
         } else {
-            log::warn!(
-                "Turn restriction {} refers to a non-existing edge from OSM node {} to {}; skipping.",
-                rel.id, nodes_path[0], nodes_path[1]
-            );
-            return Ok(());
-        }
-
-        for i in 1..cloned_path.len() - 1 {
-            let cloned_from = cloned_path[i];
-            let cloned_to = cloned_path[i + 1];
-            let original_from = original_path[i];
-            let original_to = original_path[i + 1];
-
-            let cost = self
-                .temp_edges
-                .get(&original_from)
-                .and_then(|e| e.get(&original_to).copied())
-                .ok_or_else(|| {
-                    GraphError::InvalidOsmData(
-                        "Missing edge in the middle of restriction path".into(),
-                    )
-                })?;
-
-            self.temp_edges
-                .entry(cloned_from)
-                .or_default()
-                .insert(cloned_to, cost);
-        }
-
-        let last_via_clone_id =
-            *cloned_path
-                .get(cloned_path.len() - 2)
-                .ok_or(GraphError::InvalidOsmData(
-                    "Restriction path too short for exit logic".into(),
-                ))?;
-        let last_via_original_id =
-            *original_path
-                .get(original_path.len() - 2)
-                .ok_or(GraphError::InvalidOsmData(
-                    "Restriction path too short for exit logic".into(),
-                ))?;
-        let to_node_id = *original_path.last().unwrap();
-
-        match restriction_type {
-            TurnRestriction::Mandatory => {
-                let cost = self
-                    .temp_edges
-                    .get(&last_via_original_id)
-                    .and_then(|e| e.get(&to_node_id).copied())
-                    .ok_or_else(|| {
-                        GraphError::InvalidOsmData(
-                            "Missing final edge for mandatory restriction".into(),
-                        )
-                    })?;
-
-                let edges = self.temp_edges.entry(last_via_clone_id).or_default();
-                edges.clear();
-                edges.insert(to_node_id, cost);
+            if cloned_nodes.len() >= 2 {
+                let from_id = cloned_nodes[cloned_nodes.len() - 2];
+                let to_id = cloned_nodes[cloned_nodes.len() - 1];
+                change.edges_to_remove.insert((from_id, to_id));
             }
-            TurnRestriction::Prohibitory => {
-                if let Some(original_edges) = self.temp_edges.get(&last_via_original_id).cloned() {
-                    let new_edges = self.temp_edges.entry(last_via_clone_id).or_default();
-                    *new_edges = original_edges;
-                    new_edges.remove(&to_node_id);
-                }
-            }
-            TurnRestriction::Inapplicable => unreachable!(),
         }
 
-        Ok(())
+        change.apply()
     }
 
     fn get_way_penalty(&self, tags: &FxHashMap<u32, u32>) -> Option<f64> {
