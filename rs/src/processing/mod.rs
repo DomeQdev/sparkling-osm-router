@@ -671,6 +671,12 @@ impl<'a> GraphBuilder<'a> {
             let from_node = Self::get_node_before(from_way, from_idx)?;
             let to_node = Self::get_node_after(to_way, to_idx)?;
 
+            if from_node == to_node {
+                return Err(GraphError::InvalidOsmData(
+                    "'from' and 'to' nodes are the same.".into(),
+                ));
+            }
+
             return Ok(vec![from_node, via_node_id, to_node]);
         }
 
@@ -711,6 +717,20 @@ impl<'a> GraphBuilder<'a> {
                 }
             }
         }
+
+        if final_path.len() < 3 {
+            return Err(GraphError::InvalidOsmData(format!(
+                "Turn restriction path has fewer than 3 nodes: {:?}.",
+                final_path
+            )));
+        }
+
+        if final_path.windows(2).any(|w| w[0] == w[1]) {
+            return Err(GraphError::InvalidOsmData(
+                "Degenerate path in turn restriction (consecutive duplicate nodes).".into(),
+            ));
+        }
+
         Ok(final_path)
     }
 }
