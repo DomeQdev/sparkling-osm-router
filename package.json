@@ -2,7 +2,7 @@
     "name": "sparkling-osm-router",
     "description": "✨ OSM Router (Open Street Router) made with TypeScript and Rust",
     "license": "GNU General Public License v3.0",
-    "version": "2.0.3",
+    "version": "2.0.4",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "repository": {
@@ -38,6 +38,7 @@
         "debug": "npm run cargo-build --",
         "build": "npm run cargo-build -- --release",
         "cross": "npm run cross-build -- --release",
-        "postinstall": "npm run build"
+        "postinstall": "npm run build",
+        "publish": "npm run build && tsc && npm publish"
     }
 }
