@@ -242,3 +242,53 @@ pub extern "C" fn sparkling_get_nodes_count(graph_ptr: *const MemoryMappedGraph<
     };
     graph.nodes_count()
 }
+
+#[no_mangle]
+pub extern "C" fn sparkling_get_node_tags_json(
+    graph_ptr: *const MemoryMappedGraph<'static>,
+    node_idx: u32,
+    out_len: *mut u32,
+) -> *mut u8 {
+    unsafe {
+        if !out_len.is_null() {
+            *out_len = 0;
+        }
+    }
+
+    let graph = match unsafe { graph_ptr.as_ref() } {
+        Some(g) => g,
+        None => return std::ptr::null_mut(),
+    };
+
+    let node = match graph.get_node(node_idx) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
+    };
+
+    let tags: std::collections::HashMap<&str, &str> = graph.get_tags(node).collect();
+    if tags.is_empty() {
+        return std::ptr::null_mut();
+    }
+
+    match serde_json::to_string(&tags) {
+        Ok(mut s) => {
+            s.shrink_to_fit();
+            let ptr = s.as_mut_ptr();
+            unsafe {
+                if !out_len.is_null() {
+                    *out_len = s.len() as u32;
+                }
+            }
+            std::mem::forget(s);
+            ptr
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn sparkling_free_string(ptr: *mut u8, len: u32) {
+    if !ptr.is_null() {
+        unsafe { drop(String::from_raw_parts(ptr, len as usize, len as usize)) };
+    }
+}

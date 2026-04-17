@@ -14,7 +14,7 @@ export const rustLib = dlopen(libPath, {
         returns: FFIType.bool,
     },
     sparkling_mmap_init: {
-        args: [FFIType.ptr, FFIType.u64], // Zmiana na u64
+        args: [FFIType.ptr, FFIType.u64],
         returns: FFIType.ptr,
     },
     sparkling_mmap_destroy: {
@@ -30,7 +30,7 @@ export const rustLib = dlopen(libPath, {
             FFIType.ptr, // graph_ptr
             FFIType.u32, // from_idx
             FFIType.u32, // to_idx
-            FFIType.u32, // step_limit (zmiana na u32)
+            FFIType.u32, // step_limit
             FFIType.ptr, // out_len
             FFIType.ptr, // out_capacity
             FFIType.ptr, // out_error
@@ -38,7 +38,7 @@ export const rustLib = dlopen(libPath, {
         returns: FFIType.ptr,
     },
     sparkling_free_route_result: {
-        args: [FFIType.ptr, FFIType.u32, FFIType.u32], // Zmiana na u32
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32],
         returns: FFIType.void,
     },
     sparkling_get_nodes_base_ptr: {
@@ -49,18 +49,25 @@ export const rustLib = dlopen(libPath, {
         args: [FFIType.ptr],
         returns: FFIType.u32,
     },
+    sparkling_get_node_tags_json: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.ptr],
+        returns: FFIType.ptr,
+    },
+    sparkling_free_string: {
+        args: [FFIType.ptr, FFIType.u32],
+        returns: FFIType.void,
+    },
 });
 
 export function readU32ArrayAndFree(pointer: Pointer | null, len: number, capacity: number): number[] {
     if (!pointer || len === 0) return [];
 
-    // Zamieniamy wskaźnik na ArrayBuffer (0-copy odczyt pamięci RAM Rusta)
     const buffer = toArrayBuffer(pointer, 0, len * 4);
     const view = new DataView(buffer);
 
     const result: number[] = [];
     for (let i = 0; i < len; i++) {
-        result.push(view.getUint32(i * 4, true)); // Odczyt little-endian
+        result.push(view.getUint32(i * 4, true));
     }
 
     rustLib.symbols.sparkling_free_route_result(pointer, len, capacity);

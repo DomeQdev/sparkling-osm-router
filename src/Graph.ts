@@ -1,5 +1,5 @@
 import { readU32ArrayAndFree, rustLib } from "./RustModules";
-import type { Location, ProfileConfig, RouteResult } from "./typings";
+import type { Location, OsmNode, ProfileConfig, RouteResult } from "./typings";
 import { type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 
 export type BuildGraphOptions = {
@@ -13,6 +13,7 @@ class Graph {
     public graphPointer: Pointer | null = null;
     private nodesBasePointer: Pointer | null = null;
     private nodesCount: number = 0;
+    private nodesView: DataView | null = null;
 
     private fileBuffer: Uint8Array | null = null;
 
@@ -33,6 +34,12 @@ class Graph {
 
         this.nodesBasePointer = rustLib.symbols.sparkling_get_nodes_base_ptr(this.graphPointer);
         this.nodesCount = rustLib.symbols.sparkling_get_nodes_count(this.graphPointer);
+
+        if (this.nodesBasePointer && this.nodesCount > 0) {
+            // Rezerwujemy DataView całego widoku nodów by działać O(0) na odczytach
+            const buf = toArrayBuffer(this.nodesBasePointer, 0, this.nodesCount * 32);
+            this.nodesView = new DataView(buf);
+        }
     };
 
     unloadGraph = () => {
@@ -42,6 +49,7 @@ class Graph {
         this.graphPointer = null;
         this.nodesBasePointer = null;
         this.nodesCount = 0;
+        this.nodesView = null;
         this.fileBuffer = null;
         return true;
     };
@@ -141,6 +149,40 @@ class Graph {
         }
 
         return shape;
+    };
+
+    getNode = (nodeId: number): OsmNode | null => {
+        if (!this.nodesView || !this.graphPointer) throw new Error("Graph is not loaded");
+        if (nodeId >= this.nodesCount) return null;
+
+        const nodeOffset = nodeId * 32;
+
+        const lat = this.nodesView.getFloat32(nodeOffset + 8, true);
+        const lon = this.nodesView.getFloat32(nodeOffset + 12, true);
+        const tagCount = this.nodesView.getUint32(nodeOffset + 28, true);
+
+        let tags: Record<string, string> = {};
+
+        if (tagCount > 0) {
+            const outLenPtr = new Uint32Array(1);
+            const tagsPtr = rustLib.symbols.sparkling_get_node_tags_json(
+                this.graphPointer,
+                nodeId,
+                ptr(outLenPtr),
+            );
+
+            if (tagsPtr && outLenPtr[0]! > 0) {
+                try {
+                    const buf = toArrayBuffer(tagsPtr, 0, outLenPtr[0]!);
+                    const jsonStr = new TextDecoder().decode(buf);
+                    tags = JSON.parse(jsonStr);
+                } finally {
+                    rustLib.symbols.sparkling_free_string(tagsPtr, outLenPtr[0]!);
+                }
+            }
+        }
+
+        return { id: nodeId, location: [lon, lat], tags };
     };
 }
 

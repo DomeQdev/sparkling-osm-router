@@ -64,3 +64,9 @@ export type ProfileConfig = (
     disallowMotorroad?: boolean;
     disableRestrictions?: boolean;
 };
+
+export interface OsmNode {
+    id: number;
+    location: Location;
+    tags: Record<string, string>;
+}
