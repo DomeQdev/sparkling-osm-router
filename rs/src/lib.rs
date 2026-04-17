@@ -131,33 +131,50 @@ pub extern "C" fn sparkling_mmap_destroy(ptr: *mut MemoryMappedGraph<'static>) {
 }
 
 #[no_mangle]
-pub extern "C" fn sparkling_find_nearest_node(
+pub extern "C" fn sparkling_find_nearest_nodes(
     graph_ptr: *const MemoryMappedGraph<'static>,
     lat: f32,
     lon: f32,
     radius: f32,
-) -> u32 {
-    let graph = match unsafe { graph_ptr.as_ref() } {
-        Some(g) => g,
-        None => return u32::MAX,
-    };
-
-    let candidates = graph.find_nodes_within_radius(lat, lon, radius);
-
-    let mut closest_idx = u32::MAX;
-    let mut min_dist = f32::MAX;
-
-    for &idx in &candidates {
-        if let Some(node) = graph.get_node(idx) {
-            let dist = routx::earth_distance(lat, lon, node.lat, node.lon);
-            if dist < min_dist {
-                min_dist = dist;
-                closest_idx = idx;
-            }
-        }
+    max_count: u32,
+    out_len: *mut u32,
+    out_capacity: *mut u32,
+) -> *mut u32 {
+    unsafe {
+        *out_len = 0;
+        *out_capacity = 0;
     }
 
-    closest_idx
+    let graph = match unsafe { graph_ptr.as_ref() } {
+        Some(g) => g,
+        None => return std::ptr::null_mut(),
+    };
+
+    let mut candidates = graph.find_nodes_within_radius(lat, lon, radius);
+
+    candidates.sort_by(|&a, &b| {
+        let na = graph.get_node(a).unwrap();
+        let nb = graph.get_node(b).unwrap();
+
+        let da = fast_distance_sq(lat, lon, na.lat, na.lon);
+        let db = fast_distance_sq(lat, lon, nb.lat, nb.lon);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Truncate to max_count if specified
+    if max_count > 0 && candidates.len() > max_count as usize {
+        candidates.truncate(max_count as usize);
+    }
+
+    candidates.shrink_to_fit();
+    let ptr = candidates.as_mut_ptr();
+    unsafe {
+        *out_len = candidates.len() as u32;
+        *out_capacity = candidates.capacity() as u32;
+    }
+    std::mem::forget(candidates);
+
+    ptr
 }
 
 #[no_mangle]
@@ -213,7 +230,7 @@ pub extern "C" fn sparkling_find_route(
 }
 
 #[no_mangle]
-pub extern "C" fn sparkling_free_route_result(ptr: *mut u32, len: u32, capacity: u32) {
+pub extern "C" fn sparkling_free_u32_array(ptr: *mut u32, len: u32, capacity: u32) {
     if !ptr.is_null() {
         unsafe { drop(Vec::from_raw_parts(ptr, len as usize, capacity as usize)) };
     }
@@ -291,4 +308,14 @@ pub extern "C" fn sparkling_free_string(ptr: *mut u8, len: u32) {
     if !ptr.is_null() {
         unsafe { drop(String::from_raw_parts(ptr, len as usize, len as usize)) };
     }
+}
+
+fn fast_distance_sq(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
+    let lat_avg = (lat1 + lat2) * 0.5;
+    let cos_lat = lat_avg.to_radians().cos();
+
+    let dlat = lat2 - lat1;
+    let dlon = (lon2 - lon1) * cos_lat;
+
+    dlat * dlat + dlon * dlon
 }

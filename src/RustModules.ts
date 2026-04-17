@@ -21,9 +21,17 @@ export const rustLib = dlopen(libPath, {
         args: [FFIType.ptr],
         returns: FFIType.void,
     },
-    sparkling_find_nearest_node: {
-        args: [FFIType.ptr, FFIType.f32, FFIType.f32, FFIType.f32],
-        returns: FFIType.u32,
+    sparkling_find_nearest_nodes: {
+        args: [
+            FFIType.ptr, // graph_ptr
+            FFIType.f32, // lat
+            FFIType.f32, // lon
+            FFIType.f32, // radius
+            FFIType.u32, // max_count
+            FFIType.ptr, // out_len
+            FFIType.ptr, // out_capacity
+        ],
+        returns: FFIType.ptr,
     },
     sparkling_find_route: {
         args: [
@@ -37,7 +45,7 @@ export const rustLib = dlopen(libPath, {
         ],
         returns: FFIType.ptr,
     },
-    sparkling_free_route_result: {
+    sparkling_free_u32_array: {
         args: [FFIType.ptr, FFIType.u32, FFIType.u32],
         returns: FFIType.void,
     },
@@ -70,6 +78,6 @@ export function readU32ArrayAndFree(pointer: Pointer | null, len: number, capaci
         result.push(view.getUint32(i * 4, true));
     }
 
-    rustLib.symbols.sparkling_free_route_result(pointer, len, capacity);
+    rustLib.symbols.sparkling_free_u32_array(pointer, len, capacity);
     return result;
 }

@@ -36,8 +36,7 @@ class Graph {
         this.nodesCount = rustLib.symbols.sparkling_get_nodes_count(this.graphPointer);
 
         if (this.nodesBasePointer && this.nodesCount > 0) {
-            // Rezerwujemy DataView całego widoku nodów by działać O(0) na odczytach
-            const buf = toArrayBuffer(this.nodesBasePointer, 0, this.nodesCount * 32);
+            const buf = toArrayBuffer(this.nodesBasePointer, 0, this.nodesCount * 24);
             this.nodesView = new DataView(buf);
         }
     };
@@ -60,11 +59,7 @@ class Graph {
             out_path: outPath,
             profile: {
                 name: profile.id,
-                penalties: profile.penalties.map(([k, penalty]) => ({
-                    key: profile.key,
-                    value: Array.isArray(k) ? k[0] : k,
-                    penalty,
-                })),
+                penalties: profile.penalties,
                 access: Array.from(new Set([...(profile.accessTags ?? []), "access"])),
                 disallow_motorroad: profile.disallowMotorroad ?? false,
                 disable_restrictions: profile.disableRestrictions ?? false,
@@ -86,18 +81,62 @@ class Graph {
         }
     };
 
-    getNearestNode = (location: Location, searchRadiusMeters: number = 10000): number | null => {
+    getNode = (nodeId: number): OsmNode | null => {
+        if (!this.nodesView || !this.graphPointer) throw new Error("Graph is not loaded");
+        if (nodeId >= this.nodesCount) return null;
+
+        const nodeOffset = nodeId * 24;
+
+        const lat = this.nodesView.getFloat32(nodeOffset + 8, true);
+        const lon = this.nodesView.getFloat32(nodeOffset + 12, true);
+        
+        const tagInfo = this.nodesView.getUint32(nodeOffset + 20, true);
+        const tagCount = tagInfo & 0x1F;
+
+        let tags: Record<string, string> = {};
+
+        if (tagCount > 0) {
+            const outLenPtr = new Uint32Array(1);
+            const tagsPtr = rustLib.symbols.sparkling_get_node_tags_json(
+                this.graphPointer,
+                nodeId,
+                ptr(outLenPtr),
+            );
+
+            if (tagsPtr && outLenPtr[0]! > 0) {
+                try {
+                    const buf = toArrayBuffer(tagsPtr, 0, outLenPtr[0]!);
+                    const jsonStr = new TextDecoder().decode(buf);
+                    tags = JSON.parse(jsonStr);
+                } finally {
+                    rustLib.symbols.sparkling_free_string(tagsPtr, outLenPtr[0]!);
+                }
+            }
+        }
+
+        return { id: nodeId, location: [lon, lat], tags };
+    };
+
+    getNearestNodes = (location: Location, searchRadiusMeters: number = 10000, maxCount: number = 1): number[] => {
         if (!this.graphPointer) throw new Error("Graph is not loaded");
 
-        const nodeId = rustLib.symbols.sparkling_find_nearest_node(
+        const outLenPtr = new Uint32Array(1);
+        const outCapPtr = new Uint32Array(1);
+
+        const nodesPtr = rustLib.symbols.sparkling_find_nearest_nodes(
             this.graphPointer,
             location[1],
             location[0],
             searchRadiusMeters,
+            maxCount,
+            ptr(outLenPtr),
+            ptr(outCapPtr)
         );
 
-        if (nodeId === 4294967295) return null; // u32::MAX
-        return nodeId;
+        const len = outLenPtr[0]!;
+        const capacity = outCapPtr[0]!;
+
+        return readU32ArrayAndFree(nodesPtr, len, capacity);
     };
 
     getRoute = async (startNodeId: number, endNodeId: number): Promise<RouteResult | null> => {
@@ -132,57 +171,20 @@ class Graph {
     };
 
     getShape = ({ nodes }: RouteResult): Location[] => {
-        if (!this.nodesBasePointer || this.nodesCount === 0) throw new Error("Graph is not loaded");
-
-        const buf = toArrayBuffer(this.nodesBasePointer, 0, this.nodesCount * 32);
-        const view = new DataView(buf);
+        if (!this.nodesView) throw new Error("Graph is not loaded");
 
         const shape: Location[] = [];
 
         for (const nodeId of nodes) {
-            const nodeOffset = nodeId * 32;
+            const nodeOffset = nodeId * 24;
 
-            const lat = view.getFloat32(nodeOffset + 8, true);
-            const lon = view.getFloat32(nodeOffset + 12, true);
+            const lat = this.nodesView.getFloat32(nodeOffset + 8, true);
+            const lon = this.nodesView.getFloat32(nodeOffset + 12, true);
 
             shape.push([lon, lat]);
         }
 
         return shape;
-    };
-
-    getNode = (nodeId: number): OsmNode | null => {
-        if (!this.nodesView || !this.graphPointer) throw new Error("Graph is not loaded");
-        if (nodeId >= this.nodesCount) return null;
-
-        const nodeOffset = nodeId * 32;
-
-        const lat = this.nodesView.getFloat32(nodeOffset + 8, true);
-        const lon = this.nodesView.getFloat32(nodeOffset + 12, true);
-        const tagCount = this.nodesView.getUint32(nodeOffset + 28, true);
-
-        let tags: Record<string, string> = {};
-
-        if (tagCount > 0) {
-            const outLenPtr = new Uint32Array(1);
-            const tagsPtr = rustLib.symbols.sparkling_get_node_tags_json(
-                this.graphPointer,
-                nodeId,
-                ptr(outLenPtr),
-            );
-
-            if (tagsPtr && outLenPtr[0]! > 0) {
-                try {
-                    const buf = toArrayBuffer(tagsPtr, 0, outLenPtr[0]!);
-                    const jsonStr = new TextDecoder().decode(buf);
-                    tags = JSON.parse(jsonStr);
-                } finally {
-                    rustLib.symbols.sparkling_free_string(tagsPtr, outLenPtr[0]!);
-                }
-            }
-        }
-
-        return { id: nodeId, location: [lon, lat], tags };
     };
 }
 

@@ -7,6 +7,7 @@ export interface RouteResult {
 export interface OsmNode {
     id: number;
     location: Location;
+    tags: Record<string, string>;
 }
 
 export type HighwayValue =
@@ -47,26 +48,12 @@ export type RailwayValue =
     | "miniature"
     | "default";
 
-export type ProfileConfig = (
-    | {
-          key: "highway";
-          penalties: [HighwayValue | HighwayValue[], number][];
-      }
-    | {
-          key: "railway";
-          penalties: [RailwayValue | RailwayValue[], number][];
-      }
-) & {
+export type ProfileConfig = {
     id: string;
+    penalties: { key: string; value: string; penalty: number }[];
     accessTags?: string[];
     onewayTags?: string[];
     exceptTags?: string[];
     disallowMotorroad?: boolean;
     disableRestrictions?: boolean;
 };
-
-export interface OsmNode {
-    id: number;
-    location: Location;
-    tags: Record<string, string>;
-}
