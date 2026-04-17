@@ -7,26 +7,60 @@ export interface RouteResult {
 export interface OsmNode {
     id: number;
     location: Location;
-    tags: Record<string, string>;
 }
 
-export interface OsmWay {
-    id: number;
-    tags: Record<string, string>;
-    nodes: OsmNode[];
-}
+export type HighwayValue =
+    | "motorway"
+    | "motorway_link"
+    | "trunk"
+    | "trunk_link"
+    | "primary"
+    | "primary_link"
+    | "secondary"
+    | "secondary_link"
+    | "tertiary"
+    | "tertiary_link"
+    | "unclassified"
+    | "residential"
+    | "service"
+    | "living_street"
+    | "pedestrian"
+    | "track"
+    | "path"
+    | "footway"
+    | "cycleway"
+    | "bridleway"
+    | "steps"
+    | "corridor"
+    | "elevator"
+    | "default";
 
-export interface QueueStatus {
-    queuedTasks: number;
-    activeTasks: number;
-    isEmpty: boolean;
-}
+export type RailwayValue =
+    | "rail"
+    | "light_rail"
+    | "subway"
+    | "tram"
+    | "monorail"
+    | "narrow_gauge"
+    | "funicular"
+    | "preserved"
+    | "miniature"
+    | "default";
 
-export type RawProfile = {
+export type ProfileConfig = (
+    | {
+          key: "highway";
+          penalties: [HighwayValue | HighwayValue[], number][];
+      }
+    | {
+          key: "railway";
+          penalties: [RailwayValue | RailwayValue[], number][];
+      }
+) & {
     id: string;
-    key: string;
-    penalties: Record<string, number>;
-    access_tags: string[];
-    oneway_tags: string[];
-    except_tags: string[];
+    accessTags?: string[];
+    onewayTags?: string[];
+    exceptTags?: string[];
+    disallowMotorroad?: boolean;
+    disableRestrictions?: boolean;
 };

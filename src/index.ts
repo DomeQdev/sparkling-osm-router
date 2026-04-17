@@ -1,8 +1,6 @@
-import Graph, { GraphOptions } from "./modules/Graph";
-import Profile, { ProfileOptions } from "./modules/Profile";
-import RouteQueue from "./modules/RouteQueue";
+import Graph, { type GraphOptions } from "./Graph";
 import offsetShape from "./tools/offsetShape";
 import simplifyShape from "./tools/simplifyShape";
 
 export * from "./typings";
-export { Graph, GraphOptions, Profile, ProfileOptions, RouteQueue, offsetShape, simplifyShape };
+export { Graph, type GraphOptions, offsetShape, simplifyShape };

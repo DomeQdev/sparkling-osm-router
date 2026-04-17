@@ -1,51 +1,68 @@
-import { Location, OsmNode, OsmWay, QueueStatus, RouteResult } from "./typings";
+import { dlopen, FFIType, type Pointer, toArrayBuffer } from "bun:ffi";
+import { join } from "path";
+import { platform } from "os";
 
-const binding = require("../index.node");
+let libName = "sparkling_osm_router.so";
+if (platform() === "darwin") libName = "sparkling_osm_router.dylib";
+else if (platform() === "win32") libName = "sparkling_osm_router.dll";
 
-export const loadGraph: (optionsJson: string) => number = binding.loadGraph;
-export const unloadGraph: (graphId: number) => boolean = binding.unloadGraph;
+const libPath = join(import.meta.dir, "..", "target", "release", libName);
 
-export const getNode: (graphId: number, profileId: string, nodeId: number) => OsmNode | null =
-    binding.getNode;
+export const rustLib = dlopen(libPath, {
+    sparkling_build_graph: {
+        args: [FFIType.cstring],
+        returns: FFIType.bool,
+    },
+    sparkling_mmap_init: {
+        args: [FFIType.ptr, FFIType.u64], // Zmiana na u64
+        returns: FFIType.ptr,
+    },
+    sparkling_mmap_destroy: {
+        args: [FFIType.ptr],
+        returns: FFIType.void,
+    },
+    sparkling_find_nearest_node: {
+        args: [FFIType.ptr, FFIType.f32, FFIType.f32, FFIType.f32],
+        returns: FFIType.u32,
+    },
+    sparkling_find_route: {
+        args: [
+            FFIType.ptr, // graph_ptr
+            FFIType.u32, // from_idx
+            FFIType.u32, // to_idx
+            FFIType.u32, // step_limit (zmiana na u32)
+            FFIType.ptr, // out_len
+            FFIType.ptr, // out_capacity
+            FFIType.ptr, // out_error
+        ],
+        returns: FFIType.ptr,
+    },
+    sparkling_free_route_result: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32], // Zmiana na u32
+        returns: FFIType.void,
+    },
+    sparkling_get_nodes_base_ptr: {
+        args: [FFIType.ptr],
+        returns: FFIType.ptr,
+    },
+    sparkling_get_nodes_count: {
+        args: [FFIType.ptr],
+        returns: FFIType.u32,
+    },
+});
 
-export const getShape: (graphId: number, profileId: string, nodes: number[]) => Location[] = binding.getShape;
+export function readU32ArrayAndFree(pointer: Pointer | null, len: number, capacity: number): number[] {
+    if (!pointer || len === 0) return [];
 
-export const getNearestNode: (graphId: number, profileId: string, lon: number, lat: number) => number | null =
-    binding.getNearestNode;
+    // Zamieniamy wskaźnik na ArrayBuffer (0-copy odczyt pamięci RAM Rusta)
+    const buffer = toArrayBuffer(pointer, 0, len * 4);
+    const view = new DataView(buffer);
 
-export const getNodesInRadius: (
-    graphId: number,
-    profileId: string,
-    lon: number,
-    lat: number,
-    radiusMeters: number
-) => OsmNode[] = binding.getNodesInRadius;
+    const result: number[] = [];
+    for (let i = 0; i < len; i++) {
+        result.push(view.getUint32(i * 4, true)); // Odczyt little-endian
+    }
 
-export const getWaysInRadius: (
-    graphId: number,
-    profileId: string,
-    lon: number,
-    lat: number,
-    radiusMeters: number
-) => OsmWay[] = binding.getWaysInRadius;
-
-export const getRoute: (
-    graphId: number,
-    profileId: string,
-    waypoints: number[]
-) => Promise<RouteResult | null> = binding.getRoute;
-
-export const createRouteQueue: (graphId: number, profileId: string, maxConcurrency?: number) => number =
-    binding.createRouteQueue;
-
-export const enqueueRoute: (queueId: number, routeId: string, waypoints: number[]) => string =
-    binding.enqueueRoute;
-
-export const processQueue: (
-    queueId: number,
-    callback: (id: string, result: RouteResult | Error | null) => void
-) => void = binding.processQueue;
-
-export const getQueueStatus: (queueId: number) => QueueStatus = binding.getQueueStatus;
-
-export const clearRouteQueue: (queueId: number) => boolean = binding.clearRouteQueue;
+    rustLib.symbols.sparkling_free_route_result(pointer, len, capacity);
+    return result;
+}

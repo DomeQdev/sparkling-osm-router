@@ -2,43 +2,25 @@
     "name": "sparkling-osm-router",
     "description": "✨ OSM Router (Open Street Router) made with TypeScript and Rust",
     "license": "GNU General Public License v3.0",
-    "version": "2.0.5",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "module": "src/index.ts",
     "repository": {
         "type": "git",
         "url": "git://github.com/DomeQdev/sparkling-osm-router.git"
     },
-    "exports": {
-        ".": {
-            "import": "./dist/index.js",
-            "require": "./dist/index.js",
-            "types": "./dist/index.d.ts"
-        }
-    },
+    "type": "module",
     "files": [
-        "dist",
+        "src",
         "rs",
         "Cargo.toml"
     ],
-    "dependencies": {
-        "@neon-rs/cli": "^0.1.82",
-        "cli-progress": "^3.12.0"
-    },
     "devDependencies": {
-        "@types/cli-progress": "^3.11.6",
-        "@types/node": "^24.0.13",
-        "typescript": "^5.8.3"
+        "@types/bun": "latest"
+    },
+    "peerDependencies": {
+        "typescript": "^5"
     },
     "scripts": {
-        "cargo-build": "cargo build --message-format=json-render-diagnostics > cargo.log",
-        "cross-build": "cross build --message-format=json-render-diagnostics > cross.log",
-        "postcargo-build": "neon dist < cargo.log",
-        "postcross-build": "neon dist -m /target < cross.log",
-        "debug": "npm run cargo-build --",
-        "build": "npm run cargo-build -- --release",
-        "cross": "npm run cross-build -- --release",
-        "postinstall": "npm run build",
-        "publish": "npm run build && tsc && npm publish"
+        "build": "cargo build --release",
+        "postinstall": "cargo build --release"
     }
 }

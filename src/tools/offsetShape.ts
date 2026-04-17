@@ -1,9 +1,9 @@
-import { Location } from "../typings";
+import type { Location } from "../typings";
 
 function processPointSegment(
     [lon1, lat1]: Location,
     [lon2, lat2]: Location,
-    offsetMeters: number
+    offsetMeters: number,
 ): Location[] {
     const offsetDeg = offsetMeters / ((6371000 * Math.PI) / 180.0);
     const avgLatRad = (((lat1 + lat2) / 2.0) * Math.PI) / 180.0;
@@ -36,7 +36,7 @@ function findIntersection(
     [p1Lon, p1Lat]: Location,
     [p2Lon, p2Lat]: Location,
     [p3Lon, p3Lat]: Location,
-    [p4Lon, p4Lat]: Location
+    [p4Lon, p4Lat]: Location,
 ): Location | null {
     const a1 = p2Lat - p1Lat;
     const b1 = p1Lon - p2Lon;
@@ -59,34 +59,39 @@ export default (points: Location[], offsetMeters: number = 1.5): Location[] => {
     const segments: Location[][] = [];
 
     for (let i = 0; i < points.length - 1; i++) {
-        segments.push(processPointSegment(points[i], points[i + 1], offsetMeters));
+        segments.push(processPointSegment(points[i]!, points[i + 1]!, offsetMeters));
     }
 
     const result: Location[] = [];
     if (segments.length === 0) return result;
 
-    result.push(segments[0][0]);
+    result.push(segments[0]![0]!);
 
     for (let i = 0; i < segments.length - 1; i++) {
-        const currentSeg = segments[i];
-        const nextSeg = segments[i + 1];
+        const currentSeg = segments[i]!;
+        const nextSeg = segments[i + 1]!;
 
-        const p1 = points[i];
-        const p2 = points[i + 1];
-        const p3 = points[i + 2];
+        const p1 = points[i]!;
+        const p2 = points[i + 1]!;
+        const p3 = points[i + 2]!;
 
         const v1 = [p2[0] - p1[0], p2[1] - p1[1]];
         const v2 = [p3[0] - p2[0], p3[1] - p2[1]];
 
-        const dotProduct = v1[0] * v2[0] + v1[1] * v2[1];
+        const dotProduct = v1[0]! * v2[0]! + v1[1]! * v2[1]!;
 
-        const mag1 = Math.sqrt(v1[0] * v1[0] + v1[1] * v1[1]);
-        const mag2 = Math.sqrt(v2[0] * v2[0] + v2[1] * v2[1]);
+        const mag1 = Math.sqrt(v1[0]! * v1[0]! + v1[1]! * v1[1]!);
+        const mag2 = Math.sqrt(v2[0]! * v2[0]! + v2[1]! * v2[1]!);
 
         if (mag1 > 0 && mag2 > 0) {
             const normalizedDot = dotProduct / (mag1 * mag2);
             if (normalizedDot >= -0.99) {
-                const intersection = findIntersection(currentSeg[0], currentSeg[1], nextSeg[0], nextSeg[1]);
+                const intersection = findIntersection(
+                    currentSeg[0]!,
+                    currentSeg[1]!,
+                    nextSeg[0]!,
+                    nextSeg[1]!,
+                );
 
                 if (intersection) {
                     result.push(intersection);
@@ -96,12 +101,12 @@ export default (points: Location[], offsetMeters: number = 1.5): Location[] => {
             }
         }
 
-        result.push(currentSeg[1]);
-        result.push(nextSeg[0]);
+        result.push(currentSeg[1]!);
+        result.push(nextSeg[0]!);
     }
 
-    const lastSegment = segments[segments.length - 1];
-    result.push(lastSegment[1]);
+    const lastSegment = segments[segments.length - 1]!;
+    result.push(lastSegment[1]!);
 
     return result;
 };

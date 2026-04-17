@@ -1,9 +1,9 @@
-import { Location } from "../typings";
+import type { Location } from "../typings";
 
 const perpendicularDistance = (
     [lon, lat]: Location,
     [lon1, lat1]: Location,
-    [lon2, lat2]: Location
+    [lon2, lat2]: Location,
 ): number => {
     const lineLengthSquared = Math.pow(lon2 - lon1, 2) + Math.pow(lat2 - lat1, 2);
 
@@ -13,7 +13,7 @@ const perpendicularDistance = (
 
     const clampedT = Math.max(
         0,
-        Math.min(1, ((lon - lon1) * (lon2 - lon1) + (lat - lat1) * (lat2 - lat1)) / lineLengthSquared)
+        Math.min(1, ((lon - lon1) * (lon2 - lon1) + (lat - lat1) * (lat2 - lat1)) / lineLengthSquared),
     );
 
     const dx = lon - (lon1 + clampedT * (lon2 - lon1));
@@ -31,7 +31,7 @@ const findFurthestPoint = (points: Location[]): { index: number; distance: numbe
     let maxIndex = 0;
 
     for (let i = 1; i < points.length - 1; i++) {
-        const distance = perpendicularDistance(points[i], points[0], points[points.length - 1]);
+        const distance = perpendicularDistance(points[i]!, points[0]!, points[points.length - 1]!);
         if (distance > maxDistance) {
             maxDistance = distance;
             maxIndex = i;
@@ -53,8 +53,8 @@ const rdpSimplify = (points: Location[], epsilon: number): Location[] => {
 
         result = simplifiedFirst.slice(0, simplifiedFirst.length - 1).concat(simplifiedSecond);
     } else {
-        result.push(points[0]);
-        result.push(points[points.length - 1]);
+        result.push(points[0]!);
+        result.push(points[points.length - 1]!);
     }
 
     return result;
