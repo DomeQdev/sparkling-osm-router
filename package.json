@@ -7,6 +7,12 @@
         "type": "git",
         "url": "git://github.com/DomeQdev/sparkling-osm-router.git"
     },
+    "exports": {
+        ".": {
+            "import": "./src/index.ts",
+            "types": "./src/index.ts"
+        }
+    },
     "type": "module",
     "files": [
         "src",
