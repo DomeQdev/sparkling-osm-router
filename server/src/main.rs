@@ -130,6 +130,7 @@ impl Drop for LoadedGraph {
 struct AppState {
     graph: RwLock<Option<LoadedGraph>>,
     last_access: AtomicU64,
+    warmup_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -137,6 +138,7 @@ impl AppState {
         Self {
             graph: RwLock::new(None),
             last_access: AtomicU64::new(now_secs()),
+            warmup_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -306,21 +308,31 @@ async fn warmup(State(state): State<Arc<AppState>>) -> Response {
         return (StatusCode::OK, "already loaded").into_response();
     }
 
+    let _serialize = state.warmup_lock.lock().await;
+
+    if state.graph.read().is_some() {
+        state.touch();
+        return (StatusCode::OK, "already loaded").into_response();
+    }
+
     if !FsPath::new(GRAPH_PATH).exists() {
-        return (StatusCode::NOT_FOUND, "graph file not built yet").into_response();
+        let build = tokio::task::spawn_blocking(ensure_graph_file_exists).await;
+        match build {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "build task panicked").into_response()
+            }
+        }
     }
 
     let state2 = state.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let mut guard = state2.graph.write();
-        if guard.is_some() {
-            return Ok(());
-        }
-        if !FsPath::new(GRAPH_PATH).exists() {
-            return Err("__missing__".into());
-        }
         let loaded = LoadedGraph::from_file(GRAPH_PATH)?;
-        *guard = Some(loaded);
+        let mut guard = state2.graph.write();
+        if guard.is_none() {
+            *guard = Some(loaded);
+        }
         Ok(())
     })
     .await;
@@ -329,9 +341,6 @@ async fn warmup(State(state): State<Arc<AppState>>) -> Response {
         Ok(Ok(())) => {
             state.touch();
             (StatusCode::OK, "loaded").into_response()
-        }
-        Ok(Err(e)) if e == "__missing__" => {
-            (StatusCode::NOT_FOUND, "graph file not built yet").into_response()
         }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "warmup task panicked").into_response(),
@@ -600,11 +609,6 @@ fn levenshtein_ratio(a: &str, b: &str) -> f32 {
 }
 
 fn main() {
-    if let Err(e) = ensure_graph_file_exists() {
-        eprintln!("[boot] FATAL: {e}");
-        std::process::exit(1);
-    }
-
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder
         .enable_all()
